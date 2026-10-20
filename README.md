@@ -111,16 +111,19 @@ A barra superior alterna entre as telas **Processo** (fluxograma) e
 **Tendências** (`#tendencias` no fim da URL abre direto nela). A tela de
 tendências não tem rolagem: são três janelas com o mesmo eixo de tempo.
 
-1. **Nível dos tanques**: LT-101 a LT-106, em cm.
-2. **Variáveis controladas**: PV (linha) e SP (degrau claro, na mesma cor) de
-   cada malha do cenário. Quando o cenário mistura unidades (vazão em L/min e
+1. **Nível dos tanques**: LT-101 a LT-106, em cm, com o setpoint dos tanques
+   que têm malha de nível.
+2. **Variáveis controladas**: PV (linha) e SP (degrau pontilhado, na mesma
+   cor) de cada malha do cenário. Quando o cenário mistura unidades (vazão em L/min e
    nível em cm), a janela se divide lado a lado, uma parte por grandeza.
 3. **Variáveis manipuladas**: a saída de cada controlador em %, com uma faixa
    de eventos por malha embaixo (âmbar = malha em MAN).
 
 Na planta real, sem malhas, a segunda janela mostra as vazões medidas.
 
-A legenda à direita de cada janela mostra os valores no instante do cursor.
+Os setpoints aparecem como degraus pontilhados e, na margem direita de cada
+gráfico, como ponteiros com o valor (no instante do cursor). A legenda à
+direita de cada janela mostra os valores no instante do cursor.
 Clicar numa malha da legenda a destaca nas três janelas, e **Ver tendência**
 no faceplate da malha faz o mesmo. A roda do mouse muda a janela de tempo
 (1 min a 1 h), arrastar navega no histórico e **Ao vivo** volta ao tempo

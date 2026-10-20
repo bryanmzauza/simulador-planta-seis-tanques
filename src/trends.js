@@ -3,8 +3,8 @@
    janelas empilhadas com o mesmo eixo de tempo.
 
      1. Nível dos tanques       LT-101..106 em cm, na escala da garrafa
-     2. Variáveis controladas   PV e SP de cada malha do cenário (SP em degrau,
-                                fino e claro, na cor da malha). Se o cenário
+     2. Variáveis controladas   PV e SP de cada malha do cenário (SP em degrau
+                                pontilhado, na cor da malha). Se o cenário
                                 mistura unidades, a janela se divide lado a lado,
                                 uma parte por unidade: nunca dois eixos Y.
                                 Sem malhas (planta real): vazões medidas.
@@ -20,6 +20,9 @@
      indica o par e o tracejado o lado direito;
    - legenda à direita de cada janela com os valores no cursor; clicar numa
      malha da legenda destaca a malha nas três janelas;
+   - setpoint: degrau pontilhado na cor da malha, também na janela de níveis
+     para os tanques com malha de nível, e um ponteiro com o valor na margem
+     direita de cada gráfico (como a escala de um registrador);
    - dado ausente é lacuna e "—", nunca zero.
 
    Também registra ensaios e exporta CSV (padrão brasileiro). Só lê o estado. */
@@ -32,11 +35,12 @@ const VERDE = '#138a5e';
 const ROSA = '#d55181';
 const CORES_MALHA = [AZUL, VERDE, ROSA];
 const TRACEJADO = [6, 4];
+const PONTILHADO = [2, 3];       // setpoint
 
 const MAX_AMOSTRAS = 36000;      // 1 h de simulação a 10 Hz
 const MAX_REGISTRO = 400000;
 const JANELAS = [60, 120, 300, 600, 1800, 3600];
-const MARGEM = { esq: 50, dir: 12, topo: 22, base: 6 };
+const MARGEM = { esq: 50, dir: 48, topo: 22, base: 6 };   // à direita: ponteiros de SP
 const ALTURA_EIXO_T = 20;
 const ALTURA_FAIXA = 12;
 
@@ -260,10 +264,24 @@ export function createTrends(host, { getRuntime = () => ({}) } = {}) {
         const hMax = runtime.sim?.tankHeightCm ?? 25;
         const lista = [];
 
+        // SP dos tanques com malha de nível, pontilhado na cor do tanque
+        const spNivel = [];
+        for (const [tag, malha] of Object.entries(malhas)) {
+            if (malha.pvSource?.tipo !== 'nivel') continue;
+            const lt = `LT${String(malha.pvSource.id).slice(1)}`;
+            const base = PENAS_NIVEL.find(x => x.key === lt);
+            if (!base) continue;
+            const sp = pena(`${tag}.sp`, `SP ${tag}`, base.cor, { degrau: true, largura: 1.6, digitos: 1, malha: tag });
+            sp.dash = PONTILHADO;
+            sp.sp = true;
+            sp.de = lt;
+            spNivel.push(sp);
+        }
         lista.push({
             id: 'niveis',
             titulo: 'Nível dos tanques',
-            subs: [{ unidade: 'cm', faixa: { min: 0, max: hMax }, penas: PENAS_NIVEL }]
+            subtitulo: spNivel.length ? 'pontilhado: setpoint' : null,
+            subs: [{ unidade: 'cm', faixa: { min: 0, max: hMax }, penas: [...PENAS_NIVEL, ...spNivel] }]
         });
 
         const tags = Object.keys(malhas);
@@ -276,7 +294,9 @@ export function createTrends(host, { getRuntime = () => ({}) } = {}) {
                 const { cor, dash } = estilos[tag];
                 const pv = pena(`${tag}.pv`, tag, cor, { descricao: pvNome(malha), digitos, malha: tag });
                 pv.dash = dash;
-                const sp = pena(`${tag}.sp`, `${tag} SP`, cor, { degrau: true, largura: 1.4, alfa: 0.55, digitos, malha: tag, rotuloPonta: 'SP' });
+                const sp = pena(`${tag}.sp`, `${tag} SP`, cor, { degrau: true, largura: 1.6, digitos, malha: tag, rotuloPonta: 'SP' });
+                sp.dash = PONTILHADO;
+                sp.sp = true;
                 if (!porUnidade.has(unidade)) porUnidade.set(unidade, { unidade, malhas: [], penas: [] });
                 const grupo = porUnidade.get(unidade);
                 grupo.malhas.push(tag);
@@ -285,7 +305,7 @@ export function createTrends(host, { getRuntime = () => ({}) } = {}) {
                     ? { auto: true, min: 0, max: hMax, spanMin: 3 }
                     : { auto: true, min: 0, max: malha.spMax ?? 100, spanMin: 0.5, deZero: true };
             }
-            lista.push({ id: 'controladas', titulo: 'Variáveis controladas', subtitulo: 'PV linha · SP degrau', subs: [...porUnidade.values()], malhas: tags });
+            lista.push({ id: 'controladas', titulo: 'Variáveis controladas', subtitulo: 'PV linha · SP pontilhado', subs: [...porUnidade.values()], malhas: tags });
             lista.push({
                 id: 'manipuladas',
                 titulo: 'Variáveis manipuladas',
@@ -358,25 +378,34 @@ export function createTrends(host, { getRuntime = () => ({}) } = {}) {
                 legenda.append(h('div', { class: 'tv-legend-note' }, [h('span', { class: 'tv-man-swatch' }), h('span', { text: 'faixa âmbar: malha em MAN' })]));
             } else {
                 for (const sub of jan.subs) {
-                    for (const p of sub.penas) legenda.append(linhaLegendaSimples(p, sub.unidade));
+                    for (const p of sub.penas) {
+                        if (p.sp) continue;
+                        const sp = sub.penas.find(x => x.sp && x.de === p.key) ?? null;
+                        legenda.append(linhaLegendaSimples(p, sub.unidade, sp));
+                    }
                 }
             }
         });
         aplicarDestaque();
     }
 
-    function linhaLegendaSimples(p, unidade) {
+    function linhaLegendaSimples(p, unidade, sp = null) {
         const caixa = h('input', { type: 'checkbox', checked: !ocultas.has(p.key), 'aria-label': `Mostrar ${p.rotulo}` });
-        const linha = h('label', { class: `tv-legend-row${ocultas.has(p.key) ? ' off' : ''}`, title: p.descricao }, [
+        const descricao = sp
+            ? h('span', { class: 'tv-desc tv-spval', 'data-key': sp.key, 'data-digits': String(sp.digitos), title: `Setpoint de ${sp.malha}`, text: 'SP —' })
+            : h('span', { class: 'tv-desc', text: p.descricao });
+        const linha = h('label', { class: `tv-legend-row${ocultas.has(p.key) ? ' off' : ''}`, title: sp ? `${p.descricao} · setpoint de ${sp.malha}` : p.descricao }, [
             caixa,
             svgTraco(p.cor, p.dash),
             h('span', { class: 'tv-tag', text: p.rotulo }),
-            h('span', { class: 'tv-desc', text: p.descricao }),
+            descricao,
             h('span', { class: 'tv-value', 'data-key': p.key, 'data-unit': unidade, 'data-digits': String(p.digitos), text: '—' })
         ]);
         caixa.addEventListener('change', () => {
-            if (caixa.checked) ocultas.delete(p.key);
-            else ocultas.add(p.key);
+            for (const chave of sp ? [p.key, sp.key] : [p.key]) {
+                if (caixa.checked) ocultas.delete(chave);
+                else ocultas.add(chave);
+            }
             linha.classList.toggle('off', !caixa.checked);
             desenhar();
         });
@@ -569,6 +598,10 @@ export function createTrends(host, { getRuntime = () => ({}) } = {}) {
             const valor = ref ? ref.valores[campo.dataset.key] : null;
             const unidade = campo.dataset.unit;
             campo.textContent = valor === null || valor === undefined ? '—' : `${numero(valor, Number(campo.dataset.digits))} ${unidade}`;
+        }
+        for (const campo of linhas.querySelectorAll('.tv-spval')) {
+            const valor = ref ? ref.valores[campo.dataset.key] : null;
+            campo.textContent = `SP ${valor === null || valor === undefined ? '—' : numero(valor, Number(campo.dataset.digits))}`;
         }
         for (const campo of linhas.querySelectorAll('.tv-mode')) {
             const modo = ref ? ref.modos[campo.dataset.mode] : null;
@@ -797,6 +830,53 @@ export function createTrends(host, { getRuntime = () => ({}) } = {}) {
                 ctx.fillRect(x1 - 6 - larguraTexto - 3, y - 7, larguraTexto + 6, 14);
                 ctx.fillStyle = estilo.tinta;
                 ctx.fillText(p.rotuloPonta, x1 - 6, y);
+            }
+        }
+
+        // Ponteiros de SP na margem direita: triângulo na cor da malha e o valor
+        // (no instante do cursor, ou o atual). Valores iguais ficam empilhados.
+        const refSp = cursor !== null && cursor >= t0 && cursor <= t1 ? amostraEm(cursor) : visiveis[visiveis.length - 1];
+        if (refSp) {
+            const ponteiros = [];
+            for (const p of sub.penas) {
+                if (!p.sp || ocultas.has(p.key)) continue;
+                const v = refSp.valores[p.key];
+                if (v === null || v === undefined) continue;
+                ponteiros.push({ p, v, yAlvo: yDe(v), y: yDe(v) });
+            }
+            ponteiros.sort((a, b) => a.y - b.y);
+            for (let i = 1; i < ponteiros.length; i += 1) ponteiros[i].y = Math.max(ponteiros[i].y, ponteiros[i - 1].y + 11);
+            const excesso = ponteiros.length ? ponteiros[ponteiros.length - 1].y - (y1 - 4) : 0;
+            if (excesso > 0) for (const q of ponteiros) q.y = Math.max(y0 + 4, q.y - excesso);
+            ctx.font = '600 10px system-ui, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            for (const { p, v, yAlvo, y } of ponteiros) {
+                ctx.globalAlpha = destaque !== null && p.malha !== destaque ? 0.3 : 1;
+                ctx.fillStyle = p.cor;
+                ctx.beginPath();
+                ctx.moveTo(x1 + 1, yAlvo);
+                ctx.lineTo(x1 + 8, yAlvo - 4.5);
+                ctx.lineTo(x1 + 8, yAlvo + 4.5);
+                ctx.closePath();
+                ctx.fill();
+                if (Math.abs(y - yAlvo) > 1) {
+                    ctx.strokeStyle = p.cor;
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x1 + 8, yAlvo);
+                    ctx.lineTo(x1 + 10, y);
+                    ctx.stroke();
+                }
+                ctx.fillStyle = estilo.tinta;
+                ctx.fillText(numero(v, p.digitos), x1 + 11, y);
+            }
+            ctx.globalAlpha = 1;
+            if (ponteiros.length) {
+                ctx.fillStyle = estilo.suave;
+                ctx.font = '600 9.5px system-ui, sans-serif';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText('SP', x1 + 11, y0 - 6);
             }
         }
 

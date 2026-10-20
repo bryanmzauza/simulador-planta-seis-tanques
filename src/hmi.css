@@ -685,3 +685,5 @@ body[data-view="tendencias"] .main-area > .faceplate { display: none; }
     .main-area { grid-template-columns: minmax(0, 1fr); }
     .faceplate { position: absolute; right: 0; top: 0; bottom: 0; z-index: 60; box-shadow: -4px 0 16px rgb(0 0 0 / 0.15); }
 }
+
+.tv-spval { color: var(--muted); font-variant-numeric: tabular-nums; }
