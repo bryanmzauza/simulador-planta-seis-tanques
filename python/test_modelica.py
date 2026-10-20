@@ -47,6 +47,18 @@ class RuntimeModelicaTests(unittest.TestCase):
         self.rt.handle_command({"type": "scenario", "id": "nivel"})
         self.rt.handle_command({"type": "sim", "running": True, "speed": 10})
 
+    def todas_man(self):
+        for tag in list(self.state["loops"]):
+            self.rt.handle_command({"type": "loop", "id": tag, "mode": "MAN"})
+
+    def media_pv(self, tag, segundos=10):
+        """Média da PV em um trecho (tira o dente de serra das válvulas de 3 vias)."""
+        valores = []
+        for _ in range(int(segundos / (0.1 * self.rt.speed))):
+            self.rt.tick()
+            valores.append(self.state["loops"][tag]["pv"])
+        return sum(valores) / len(valores)
+
     def test_estado_publicado(self):
         s = self.state
         self.assertEqual(s["mode"], "MODELICA")
@@ -60,21 +72,34 @@ class RuntimeModelicaTests(unittest.TestCase):
         import json
         json.dumps(s)
 
-    def test_malhas_comecam_em_manual(self):
+    def test_malhas_comecam_no_modo_do_cenario(self):
         for malha in self.state["loops"].values():
-            self.assertEqual(malha["mode"], "MAN")
+            self.assertEqual(malha["mode"], "AUTO")
 
-    def test_rodar_sem_tocar_em_nada_move_os_niveis(self):
-        # Caso relatado: Rodar logo após abrir a HMI e nenhum nível sair do zero.
+    def test_cenarios_funcionais_partindo_do_vazio(self):
+        # Casos relatados: nível parado e tanques esvaziando. Rodar sem tocar em
+        # nada, partindo dos tanques vazios: toda malha chega ao SP sem saturar
+        # e nenhum tanque esvazia nem transborda.
         for nome in cenarios.CENARIOS:
             self.rt.handle_command({"type": "sim", "reset": True})
             self.rt.handle_command({"type": "scenario", "id": nome})
             self.rt.handle_command({"type": "sim", "running": True, "speed": 10})
-            avancar(self.rt, 60)
-            soma = sum(t["heightCm"] for t in self.state["tanks"].values())
-            self.assertGreater(soma, 1.0, f"cenário {nome}: níveis parados")
-            for malha in self.state["loops"].values():
-                self.assertAlmostEqual(malha["mv"], malha["uBias"], places=3)
+            avancar(self.rt, 1500)
+            for tag, malha in self.state["loops"].items():
+                pv = self.media_pv(tag)
+                tolerancia = 0.15 if malha["unit"] == "cm" else 0.05
+                self.assertAlmostEqual(pv, malha["sp"], delta=tolerancia, msg=f"{nome} {tag}")
+                self.assertTrue(0.02 < malha["mv"] < 0.98, f"{nome} {tag}: MV saturada em {malha['mv']:.2f}")
+            for tid, tanque in self.state["tanks"].items():
+                self.assertGreater(tanque["heightCm"], 3.0, f"{nome}: {tid} vazio")
+                self.assertLess(tanque["heightCm"], 22.0, f"{nome}: {tid} quase transbordando")
+            self.assertEqual(self.state["alarms"], [], nome)
+
+    def test_degrau_de_sp_nivel(self):
+        avancar(self.rt, 1500)
+        self.rt.handle_command({"type": "loop", "id": "LIC-101", "sp": 14.0})
+        avancar(self.rt, 400)
+        self.assertAlmostEqual(self.media_pv("LIC-101"), 14.0, delta=0.15)
 
     def test_tempo_avanca_com_velocidade(self):
         t0 = self.state["sim"]["t"]
@@ -88,6 +113,7 @@ class RuntimeModelicaTests(unittest.TestCase):
         self.assertEqual(self.state["sim"]["t"], t0)
 
     def test_manual_atua_e_auto_recusa_comando_direto(self):
+        self.todas_man()
         # LV-103 fechada: a B-101 não tira água de TQ-103 e ele acumula
         self.assertTrue(self.rt.handle_command({"type": "valve", "id": "V3", "opening": 0.0}))
         self.assertTrue(self.rt.handle_command({"type": "valve", "id": "V1", "opening": 0.6}))
@@ -98,6 +124,7 @@ class RuntimeModelicaTests(unittest.TestCase):
         self.assertFalse(self.rt.handle_command({"type": "valve", "id": "V1", "opening": 0.1}))
 
     def test_transferencia_sem_salto(self):
+        self.todas_man()
         self.rt.handle_command({"type": "valve", "id": "V1", "opening": 0.4})
         self.rt.handle_command({"type": "sim", "speed": 1})
         avancar(self.rt, 5)
@@ -112,10 +139,10 @@ class RuntimeModelicaTests(unittest.TestCase):
         self.rt.handle_command({"type": "scenario", "id": "vazao_valvula"})
         for tag in list(self.state["loops"]):
             self.rt.handle_command({"type": "loop", "id": tag, "mode": "AUTO"})
-        self.rt.handle_command({"type": "loop", "id": "FIC-101", "sp": 2.5})
+        self.rt.handle_command({"type": "loop", "id": "FIC-101", "sp": 2.0})
         avancar(self.rt, 120)
         malha = self.state["loops"]["FIC-101"]
-        self.assertAlmostEqual(malha["pv"], 2.5, delta=0.1)
+        self.assertAlmostEqual(malha["pv"], 2.0, delta=0.05)
         # a PV da malha é lida no início do subpasso; o FT, no fim
         self.assertAlmostEqual(self.state["flowSensors"]["FT3"]["flow"], malha["pv"], delta=0.01)
 
@@ -135,6 +162,7 @@ class RuntimeModelicaTests(unittest.TestCase):
         self.assertEqual(self.state["loops"]["LIC-101"]["sp"], 0.0)
 
     def test_valvula_manual_nao_perde_nivel(self):
+        self.todas_man()
         self.rt.handle_command({"type": "valve", "id": "V1", "opening": 0.6})
         avancar(self.rt, 60)
         h = self.state["tanks"]["H3"]["heightCm"]
@@ -152,15 +180,15 @@ class RuntimeModelicaTests(unittest.TestCase):
         self.assertEqual(estados, {True, False})
         self.assertNotEqual(self.state["threeWayValves"]["X1A"]["state"], self.state["threeWayValves"]["X1B"]["state"])
 
-    def test_reset_volta_niveis_iniciais_e_manual(self):
-        self.rt.handle_command({"type": "valve", "id": "V1", "opening": 0.6})
-        self.rt.handle_command({"type": "loop", "id": "LIC-103", "mode": "AUTO"})
+    def test_reset_volta_niveis_iniciais_e_modo_do_cenario(self):
+        self.rt.handle_command({"type": "loop", "id": "LIC-103", "mode": "MAN"})
         avancar(self.rt, 30)
         self.rt.handle_command({"type": "sim", "reset": True, "levels": {"H1": 4.0}})
         self.assertFalse(self.state["sim"]["running"])
         self.assertAlmostEqual(self.state["tanks"]["H1"]["heightCm"], 4.0, places=6)
         self.assertEqual(self.state["sim"]["t"], 0.0)
-        self.assertEqual(self.state["loops"]["LIC-103"]["mode"], "MAN")
+        self.assertEqual(self.state["loops"]["LIC-103"]["mode"], "AUTO")
+        self.rt.handle_command({"type": "sim", "reset": True, "levels": {"H1": 0.0}})
 
     def test_cenario_vazao_bomba_usa_soma(self):
         self.rt.handle_command({"type": "scenario", "id": "vazao_bomba"})
@@ -170,7 +198,7 @@ class RuntimeModelicaTests(unittest.TestCase):
         avancar(self.rt, 120)
         s = self.state
         self.assertAlmostEqual(s["loops"]["FIC-103"]["pv"], s["flowSensors"]["FT3"]["flow"] + s["flowSensors"]["FT6"]["flow"], delta=0.01)
-        self.assertAlmostEqual(s["loops"]["FIC-103"]["pv"], 4.0, delta=0.2)
+        self.assertAlmostEqual(s["loops"]["FIC-103"]["pv"], 3.0, delta=0.05)
 
     def test_server_delegacao(self):
         from unittest.mock import patch
@@ -190,6 +218,12 @@ class CenariosTests(unittest.TestCase):
             for m in c["malhas"]:
                 self.assertLessEqual(m["sp_min"], m["sp"])
                 self.assertLessEqual(m["sp"], m["sp_max"])
+
+    def test_estimativas_isoladas(self):
+        # As estimativas de operação ficam num bloco só, rotulado, fora do .mo
+        self.assertTrue(all(k.startswith("CV_HV") for k in cenarios.PARAMETROS_PLANTA))
+        self.assertEqual(cenarios.VALVULAS_MANUAIS_OPERACAO["HV1_DRAIN"], 1.0)
+        self.assertEqual(cenarios.VALVULAS_MANUAIS_OPERACAO["HV2_DRAIN"], 1.0)
 
     def test_copia_independente(self):
         a = cenarios.obter_cenario("nivel")

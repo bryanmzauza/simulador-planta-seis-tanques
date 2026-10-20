@@ -77,6 +77,10 @@ class RuntimeModelica:
         s["scenarios"] = cenarios.resumo_cenarios()
         s["loops"] = {}
         s["alarms"] = []
+        # Estimativas de operação da planta (cenarios.PARAMETROS_PLANTA), por cima
+        # dos padrões da FMU; valem até haver medições da bancada.
+        for nome, valor in cenarios.PARAMETROS_PLANTA.items():
+            self.planta.parametros[nome] = float(valor)
         for sid, opening in (("MV", 1.0),):
             self.planta.definir_valvula_manual(sid, opening)
         for sid, v in s["recycleValves"].items():
@@ -104,7 +108,9 @@ class RuntimeModelica:
             s["pumps"][pid]["command"] = float(comando)
         for vid, abertura in fixos.get("actuatedValves", {}).items():
             s["actuatedValves"][vid]["opening"] = float(abertura)
-        # Cada atuador de malha parte do U bias da malha (MAN, sem salto ao ir para AUTO)
+        # Aberturas de operação das válvulas manuais (uma só reinicialização da FMU)
+        self._aplicar_valvulas_manuais(fixos.get("valvulas_manuais", {}))
+        # Cada atuador de malha parte do U bias da malha (sem salto ao ir para AUTO)
         for m in cenario["malhas"]:
             self._escrever_atuador(m["mv"], float(m["sintonia"]["u_bias"]))
         self._aplicar_atuadores_na_planta()
@@ -117,8 +123,34 @@ class RuntimeModelica:
         self.cenario = cenario
         s["scenario"] = cenario_id
         self._atualizar_pvs()
+        self._aplicar_modos_iniciais()
         self._publicar()
         return True
+
+    def _aplicar_valvulas_manuais(self, aberturas):
+        s = self.state
+        mudou = False
+        for vid, abertura in aberturas.items():
+            abertura = _clamp(float(abertura))
+            if vid == "MV":
+                s["mainValve"]["opening"] = abertura
+            elif vid in s["recycleValves"]:
+                s["recycleValves"][vid]["opening"] = abertura
+            elif vid in s["manualValves"]:
+                s["manualValves"][vid]["opening"] = abertura
+            else:
+                continue
+            nome = VALVULAS_MANUAIS[vid]
+            if self.planta.parametros.get(nome) != abertura:
+                self.planta.parametros[nome] = abertura
+                mudou = True
+        if mudou and self.planta.inicializada:
+            self.planta.reiniciar_mantendo_niveis()
+
+    def _aplicar_modos_iniciais(self):
+        for m in self.cenario["malhas"]:
+            if m.get("modo_inicial", "MAN") == "AUTO":
+                self.banco.ajustar(m["tag"], modo="AUTO")
 
     def _pvs(self):
         return {tag: self._ler_pv(m.definicao["pv"]) for tag, m in self.banco.malhas.items()}
@@ -328,6 +360,7 @@ class RuntimeModelica:
         self._aplicar_atuadores_na_planta()
         self.banco.reiniciar()
         self._atualizar_pvs()
+        self._aplicar_modos_iniciais()
         self.ultimo_erro = None
 
     # ------------------------------------------------------------ publicar

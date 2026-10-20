@@ -33,11 +33,12 @@ SINTONIA_PADRAO = {
 }
 
 
-def malha(tag, pv, mv, descricao, unidade, sp, sp_min, sp_max, acao=1, **sintonia):
+def malha(tag, pv, mv, descricao, unidade, sp, sp_min, sp_max, acao=1, modo_inicial="AUTO", **sintonia):
     base = copy.deepcopy(SINTONIA_PADRAO)
     base.update(sintonia)
     return {
         "tag": tag,
+        "modo_inicial": modo_inicial,   # modo ao carregar o cenário e no reset
         "descricao": descricao,
         "pv": pv,            # {"tipo": "vazao", "id": "FT3"} | {"tipo": "nivel", "id": "H1"} | {"tipo": "vazao_soma", "ids": [...]}
         "mv": mv,            # {"tipo": "valvula", "id": "V1"} | {"tipo": "bomba", "id": "P1"}
@@ -70,37 +71,91 @@ def bomba(p):
     return {"tipo": "bomba", "id": p}
 
 
+# ESTIMATIVAS DE OPERAÇÃO DA PLANTA
+# Aplicadas por cima dos padrões da FMU (modelo v13) ao iniciar o modo
+# MODELICA. NÃO são medições: existem só para a simulação ter um ponto de
+# operação utilizável enquanto a bancada não é caracterizada. Trocar pelos
+# valores medidos (ensaio de esvaziamento e abertura real das HV) quando houver.
+#
+# CV_HV: condutância da válvula manual toda aberta (cm³/s por raiz de cm.c.a.).
+# No v13 o padrão é 1000 ("perda desprezível"); com isso a abertura da HV
+# não tem efeito acima de ~2 % e as descargas (mangueira de 10 mm, Cd 0,6)
+# escoam ~66 cm³/s com 10 cm de coluna, quase toda a vazão da B-103: os
+# tanques não passam de 4 cm. Com 10 (cerca de metade da condutância da
+# mangueira) TQ-101/102 ficam em ~15 cm com as válvulas a 50 %.
+PARAMETROS_PLANTA = {f"CV_HV10{i}": 10.0 for i in range(1, 10)}
+
+# Aberturas de operação das válvulas manuais (o operador ajusta na bancada).
+# HV-101/102 sempre abertas, como na bancada; HV-105/106 parcialmente
+# fechadas para TQ-105/106 segurarem nível; recirculações a 30 %.
+VALVULAS_MANUAIS_OPERACAO = {
+    "MV": 1.0,          # HV-109, descarga de B-103
+    "HV1_DRAIN": 1.0,   # HV-101
+    "HV2_DRAIN": 1.0,   # HV-102
+    "HV3_P1": 1.0,      # HV-103, sucção de B-101
+    "HV4_P2": 1.0,      # HV-104, sucção de B-102
+    "HV3_IN": 0.4,      # HV-105, TQ-105 -> TQ-103
+    "HV4_IN": 0.4,      # HV-106, TQ-106 -> TQ-104
+    "RV1": 0.3,         # HV-107, recirculação de B-101
+    "RV2": 0.3,         # HV-108, recirculação de B-102
+}
+
+# SINTONIAS (SIMC, PI) a partir de degraus em malha aberta no ponto de operação,
+# com as outras malhas em AUTO (modelo + PARAMETROS_PLANTA acima):
+#   LIC-101/102 por LV-103/104: K = 63 cm, tau = 70 s, sem atraso; tau_c = 20 s
+#   LIC-103/104 por LV-101/102: integrador, 0,33 cm/s, atraso 2 s; tau_c = 20 s
+#   LIC-103/104 por LV-103/104: integrador, -0,72 cm/s; tau_c = 20 s
+#   LIC-103/104 por B-101/102:  integrador, -0,48 cm/s; tau_c = 20 s
+#   FIC-101/102 por LV-101/102: estático, 3,6 L/min; FIC-103 por B-103: 4,2 L/min
+# Nível: b = 0,6 (peso do SP; tira o sobressinal do degrau de SP) e FTt = 10
+# (anti-windup mais rápido na partida com os tanques vazios). As vazões do
+# dente de serra das XV (3 s / 2 s) aparecem como ±0,3 cm em TQ-103/104.
+NIVEL = {"b": 0.6, "ftt": 10.0}
+
+# TQ-103 e TQ-104 não têm descarga por gravidade (só as bombas os esvaziam):
+# são integradores e só ficam estáveis com uma malha de nível. Por isso os
+# dois cenários de vazão também seguram o nível deles, pelo atuador de saída.
+
 CENARIOS = {
+    "nivel": {
+        "nome": "Nível",
+        "descricao": "Níveis de TQ-101..TQ-104 pelas válvulas de controle (pareamento direto); bombas fixas em 100 %.",
+        "fixos": {
+            "pumps": {"P1": 1.0, "P2": 1.0, "P3": 1.0},
+            "valvulas_manuais": VALVULAS_MANUAIS_OPERACAO,
+        },
+        "malhas": [
+            malha("LIC-101", nivel("H1"), valvula("V3"), "Nível de TQ-101 por LV-103", "cm", 12.0, 0.0, 25.0, kp=0.056, ti=70.0, **NIVEL),
+            malha("LIC-102", nivel("H2"), valvula("V4"), "Nível de TQ-102 por LV-104", "cm", 12.0, 0.0, 25.0, kp=0.056, ti=70.0, **NIVEL),
+            malha("LIC-103", nivel("H3"), valvula("V1"), "Nível de TQ-103 por LV-101", "cm", 10.0, 0.0, 25.0, kp=0.138, ti=88.0, **NIVEL),
+            malha("LIC-104", nivel("H4"), valvula("V2"), "Nível de TQ-104 por LV-102", "cm", 10.0, 0.0, 25.0, kp=0.138, ti=88.0, **NIVEL),
+        ],
+    },
     "vazao_valvula": {
         "nome": "Vazão por válvula",
-        "descricao": "Cada FT controlado pela válvula de controle (LV) do seu trecho; bombas fixas em 100 %.",
-        "fixos": {"pumps": {"P1": 1.0, "P2": 1.0, "P3": 1.0}},
+        "descricao": "Vazões de alimentação pelas LV-101/102; TQ-103/104 seguram nível pelas LV-103/104. Bombas fixas em 100 %.",
+        "fixos": {
+            "pumps": {"P1": 1.0, "P2": 1.0, "P3": 1.0},
+            "valvulas_manuais": VALVULAS_MANUAIS_OPERACAO,
+        },
         "malhas": [
-            malha("FIC-101", vazao("FT3"), valvula("V1"), "Vazão antes de LV-101", "L/min", 2.0, 0.0, 6.0, kp=0.08, ti=4.0),
-            malha("FIC-102", vazao("FT6"), valvula("V2"), "Vazão antes de LV-102", "L/min", 2.0, 0.0, 6.0, kp=0.08, ti=4.0),
-            malha("FIC-105", vazao("FT4"), valvula("V3"), "Vazão de B-101 para TQ-101", "L/min", 1.5, 0.0, 6.0, kp=0.08, ti=4.0),
-            malha("FIC-106", vazao("FT5"), valvula("V4"), "Vazão de B-102 para TQ-102", "L/min", 1.5, 0.0, 6.0, kp=0.08, ti=4.0),
+            malha("FIC-101", vazao("FT3"), valvula("V1"), "Vazão antes de LV-101", "L/min", 1.6, 0.0, 6.0, kp=0.12, ti=1.5),
+            malha("FIC-102", vazao("FT6"), valvula("V2"), "Vazão antes de LV-102", "L/min", 1.6, 0.0, 6.0, kp=0.12, ti=1.5),
+            malha("LIC-103", nivel("H3"), valvula("V3"), "Nível de TQ-103 por LV-103", "cm", 10.0, 0.0, 25.0, acao=-1, kp=0.069, ti=80.0, **NIVEL),
+            malha("LIC-104", nivel("H4"), valvula("V4"), "Nível de TQ-104 por LV-104", "cm", 10.0, 0.0, 25.0, acao=-1, kp=0.069, ti=80.0, **NIVEL),
         ],
     },
     "vazao_bomba": {
         "nome": "Vazão por bomba",
-        "descricao": "Cada FT controlado pela rotação da bomba do seu trecho; válvulas de controle fixas em 100 %.",
-        "fixos": {"actuatedValves": {"V1": 1.0, "V2": 1.0, "V3": 1.0, "V4": 1.0}},
+        "descricao": "Vazão total de alimentação pela B-103; TQ-103/104 seguram nível pelas B-101/102. Válvulas de controle fixas em 100 %.",
+        "fixos": {
+            "actuatedValves": {"V1": 1.0, "V2": 1.0, "V3": 1.0, "V4": 1.0},
+            "valvulas_manuais": VALVULAS_MANUAIS_OPERACAO,
+        },
         "malhas": [
-            malha("FIC-103", vazao_soma("FT3", "FT6"), bomba("P3"), "Vazão total de B-103 (FT-101 + FT-102)", "L/min", 4.0, 0.0, 12.0, kp=0.05, ti=4.0),
-            malha("FIC-105", vazao("FT4"), bomba("P1"), "Vazão de B-101 para TQ-101", "L/min", 1.5, 0.0, 6.0, kp=0.08, ti=4.0),
-            malha("FIC-106", vazao("FT5"), bomba("P2"), "Vazão de B-102 para TQ-102", "L/min", 1.5, 0.0, 6.0, kp=0.08, ti=4.0),
-        ],
-    },
-    "nivel": {
-        "nome": "Nível",
-        "descricao": "Níveis de TQ-101..TQ-104 pelas válvulas de controle (pareamento direto); bombas fixas em 100 %.",
-        "fixos": {"pumps": {"P1": 1.0, "P2": 1.0, "P3": 1.0}},
-        "malhas": [
-            malha("LIC-101", nivel("H1"), valvula("V3"), "Nível de TQ-101 por LV-103", "cm", 9.0, 0.0, 25.0, kp=0.062, ti=33.0),
-            malha("LIC-102", nivel("H2"), valvula("V4"), "Nível de TQ-102 por LV-104", "cm", 9.0, 0.0, 25.0, kp=0.062, ti=33.0),
-            malha("LIC-103", nivel("H3"), valvula("V1"), "Nível de TQ-103 por LV-101", "cm", 12.0, 0.0, 25.0, kp=0.062, ti=33.0),
-            malha("LIC-104", nivel("H4"), valvula("V2"), "Nível de TQ-104 por LV-102", "cm", 12.0, 0.0, 25.0, kp=0.062, ti=33.0),
+            malha("FIC-103", vazao_soma("FT3", "FT6"), bomba("P3"), "Vazão total de B-103 (FT-101 + FT-102)", "L/min", 3.0, 0.0, 12.0, kp=0.1, ti=2.0),
+            malha("LIC-103", nivel("H3"), bomba("P1"), "Nível de TQ-103 por B-101", "cm", 10.0, 0.0, 25.0, acao=-1, kp=0.104, ti=80.0, **NIVEL),
+            malha("LIC-104", nivel("H4"), bomba("P2"), "Nível de TQ-104 por B-102", "cm", 10.0, 0.0, 25.0, acao=-1, kp=0.104, ti=80.0, **NIVEL),
         ],
     },
 }
