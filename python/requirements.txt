@@ -1,2 +1,8 @@
 pyserial>=3.5,<4
 websockets>=13,<16
+# Modo MODELICA (FMU da planta + controladores):
+#   PyFMI nao instala por pip no Windows; use o conda-forge:
+#   conda create -n seistanques -c conda-forge python=3.12 pyfmi websockets pyserial pyzmq
+#   conda run -n seistanques pip install OMPython
+# OMPython so e necessario para gerar as FMUs (python/build_fmu.py) com o OpenModelica.
+OMPython>=3.5

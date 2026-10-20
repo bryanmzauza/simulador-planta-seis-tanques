@@ -45,11 +45,15 @@ SERIAL_BAUD = int(
 
 if BACKEND_MODE not in {
     "MOCK",
-    "HARDWARE"
+    "HARDWARE",
+    "MODELICA"
 }:
     raise ValueError(
-        "SIX_TANK_MODE deve ser MOCK ou HARDWARE."
+        "SIX_TANK_MODE deve ser MOCK, HARDWARE ou MODELICA."
     )
+
+# Runtime do modo MODELICA (planta + controladores em FMU), criado em main().
+modelica_runtime = None
 
 clients = set()
 serial_bridge = None
@@ -308,6 +312,10 @@ state = {
 
     # Vazões por trecho usadas apenas para animação/diagnóstico da HMI.
     "flows": {},
+
+    # Modo do backend, para a HMI saber se pode atuar (MOCK/MODELICA)
+    # ou se é só leitura (HARDWARE).
+    "mode": BACKEND_MODE,
 }
 
 
@@ -639,6 +647,10 @@ def hardware_mode():
     return BACKEND_MODE == "HARDWARE"
 
 
+def modelica_mode():
+    return BACKEND_MODE == "MODELICA"
+
+
 def forward_command_to_arduino(message):
     return False  # Aquisição: nenhuma atuação física.
 
@@ -828,6 +840,13 @@ def handle_command(
 ):
     if hardware_mode():
         return False
+
+    # No modo MODELICA quem interpreta os comandos é o runtime
+    # (bombas e válvulas, malhas, cenário, válvulas de 3 vias, relógio).
+    if modelica_mode():
+        if modelica_runtime is None:
+            return False
+        return modelica_runtime.handle_command(message)
 
 
     message_type = (
@@ -1836,6 +1855,9 @@ async def state_sender(
                 process_serial_events()
                 if last_telemetry_time is None or time.monotonic() - last_telemetry_time > TELEMETRY_TIMEOUT_S:
                     apply_hardware_telemetry({})
+            elif modelica_mode():
+                # A simulação avança na tarefa modelica_loop(); aqui só se envia.
+                pass
             else:
                 update_mock_plant(
                     dt
@@ -1925,6 +1947,9 @@ async def client_handler(
 
             if hardware_mode():
                 await send_json(websocket, {"type": "error", "message": "Planta real somente leitura."})
+            elif modelica_mode():
+                if handle_command(message) is False:
+                    await send_json(websocket, {"type": "error", "message": f"Comando recusado: {message.get('type')} {message.get('id', '')}".strip()})
             else:
                 handle_command(message)
 
@@ -1949,9 +1974,43 @@ async def client_handler(
 # MAIN
 # ============================================================
 
+# ============================================================
+# LAÇO DO MODO MODELICA
+# ============================================================
+
+async def modelica_loop():
+    """Avança a simulação a cada 100 ms de relógio (uma só vez, para todos os clientes)."""
+    proximo = time.monotonic()
+    while True:
+        modelica_runtime.tick()
+        proximo += 0.10
+        atraso = proximo - time.monotonic()
+        if atraso < 0:
+            proximo = time.monotonic()
+            atraso = 0
+        await asyncio.sleep(atraso)
+
+
+def create_modelica_runtime():
+    try:
+        from modelica_runtime import RuntimeModelica
+    except ImportError as exc:
+        raise SystemExit(
+            "Modo MODELICA precisa do PyFMI. Use o ambiente conda 'seistanques' "
+            f"(ver README) ou rode rodar_planta_modelica.bat. Detalhe: {exc}"
+        )
+    try:
+        return RuntimeModelica(state)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"{exc}")
+
+
 async def main():
+    global modelica_runtime
     if hardware_mode():
         apply_hardware_telemetry({})
+    if modelica_mode():
+        modelica_runtime = create_modelica_runtime()
 
     global serial_bridge
 
@@ -1985,6 +2044,13 @@ async def main():
             "Se o Arduino ainda nao estiver conectado, "
             "o servidor continuara tentando reconectar."
         )
+    elif modelica_mode():
+        print(
+            "Modo: MODELICA (FMU da planta v13 + controladores PID_ISA/PI)"
+        )
+        print(
+            f"Cenario inicial: {modelica_runtime.cenario_id}"
+        )
     else:
         print(
             "Modo: MOCK (hidraulica simulada)"
@@ -1998,16 +2064,33 @@ async def main():
         "=============================================="
     )
 
-    try:
-        async with websockets.serve(
-            client_handler,
-            HOST,
-            PORT
-        ):
+    loop_task = None
+    if modelica_mode():
+        loop_task = asyncio.create_task(modelica_loop())
 
+    try:
+        try:
+            servidor = websockets.serve(
+                client_handler,
+                HOST,
+                PORT
+            )
+            await servidor.__aenter__()
+        except OSError as exc:
+            raise SystemExit(
+                f"ERRO: a porta {PORT} já está em uso ({exc.strerror}). "
+                "Outro backend da planta está rodando: feche a janela dele "
+                "e execute de novo."
+            )
+
+        try:
             await asyncio.Future()
+        finally:
+            await servidor.__aexit__(None, None, None)
 
     finally:
+        if loop_task is not None:
+            loop_task.cancel()
         if serial_bridge is not None:
             serial_bridge.stop()
 
