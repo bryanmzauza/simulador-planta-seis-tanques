@@ -79,6 +79,7 @@ export function createFaceplate(container, actions = {}) {
         setLoop: () => false,
         setThreeWayTiming: () => false,
         setInitialLevel: () => false,
+        showTrend: () => false,
         ...actions
     };
 
@@ -157,6 +158,9 @@ export function createFaceplate(container, actions = {}) {
         const btnMan = h('button', { type: 'button', class: 'fp-mode', onclick: () => act.setLoop(tag, { mode: 'MAN' }) }, ['MAN']);
         const quality = h('span', { class: 'fp-quality' });
         root.append(h('div', { class: 'fp-row fp-modes' }, [btnAuto, btnMan, quality]));
+        root.append(h('div', { class: 'fp-row' }, [
+            h('button', { type: 'button', class: 'fp-trend', title: 'Abre as tendências desta malha (PV, SP e MV)', onclick: () => act.showTrend(tag) }, ['Ver tendência'])
+        ]));
 
         // Setpoint
         const spInput = h('input', { type: 'number', class: 'fp-number', step: '0.1' });

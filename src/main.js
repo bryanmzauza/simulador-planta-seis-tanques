@@ -28,7 +28,7 @@ import {
 import { createSynoptic } from './synoptic.js';
 import { createFaceplate } from './faceplate.js';
 import { createTopbar } from './topbar.js';
-import { ExperimentDashboard } from './experiment-dashboard.js';
+import { createTrends } from './trends.js';
 import { createSimulationAPI } from './simulation-api.js';
 import { createCodePanel } from './code-panel.js';
 
@@ -42,7 +42,11 @@ const faceplate = createFaceplate(document.getElementById('faceplate'), {
     setManualValveOpening: (id, opening) => setManualValveOpening(id, opening),
     setLoop: (tag, changes) => setLoop(tag, changes),
     setThreeWayTiming: (id, tA, tB) => setThreeWayTiming(id, tA, tB),
-    setInitialLevel: (id, cm) => setSim({ levels: { [id]: cm } })
+    setInitialLevel: (id, cm) => setSim({ levels: { [id]: cm } }),
+    showTrend: tag => {
+        setView('tendencias');
+        trends.focusLoop(tag);
+    }
 });
 
 const synoptic = createSynoptic(document.getElementById('synoptic'), {
@@ -70,12 +74,39 @@ document.getElementById('faceplate').addEventListener('faceplate-change', event 
 });
 
 function selectFromHash() {
+    if (location.hash === '#tendencias') {
+        setView('tendencias');
+        return;
+    }
+    setView('processo');
     const match = /^#(loop|pump|valve|xv|hv|tank|lt|ft):([\w-]+)$/.exec(location.hash);
     if (!match) return;
     faceplate.show({ kind: match[1], id: match[2] });
     synoptic.setSelected({ kind: match[1], id: match[2] });
 }
 window.addEventListener('hashchange', selectFromHash);
+
+// TELAS: Processo (sinótico + faceplate) e Tendências
+/* Uma só página; a tela ativa fica em body[data-view] e na URL (#tendencias). */
+
+let view = 'processo';
+
+function setView(nova) {
+    if (nova !== 'processo' && nova !== 'tendencias') return;
+    view = nova;
+    document.body.dataset.view = view;
+    if (view === 'tendencias') {
+        trends.show();
+        if (location.hash !== '#tendencias') history.replaceState(null, '', '#tendencias');
+    } else {
+        trends.hide();
+        if (location.hash === '#tendencias') {
+            const selection = faceplate.getSelection();
+            history.replaceState(null, '', selection ? `#${selection.kind}:${selection.id}` : location.pathname + location.search);
+        }
+    }
+    topbar.setView(view);
+}
 
 const topbar = createTopbar(document.getElementById('topbar'), document.getElementById('alarm-bar'), {
     connectToggle: async () => {
@@ -93,7 +124,8 @@ const topbar = createTopbar(document.getElementById('topbar'), document.getEleme
     },
     setRunning: running => setSim({ running }),
     reset: () => setSim({ reset: true }),
-    setSpeed: speed => setSim({ speed })
+    setSpeed: speed => setSim({ speed }),
+    setView: nova => setView(nova)
 });
 
 function updateView() {
@@ -101,6 +133,7 @@ function updateView() {
     synoptic.update(realPlant, runtime);
     faceplate.update(realPlant, runtime);
     topbar.update(realPlant, runtime);
+    trends.update(realPlant, runtime);
 }
 
 onRealUpdate(updateView);
@@ -114,13 +147,12 @@ document.addEventListener('keydown', event => {
 });
 
 // TENDÊNCIAS E REGISTRO
+/* Tela própria (src/trends.js), alternada com o processo pela barra
+   superior. Amostra sempre, mesmo escondida. Só lê o estado. */
 
-const experimentDashboard = new ExperimentDashboard({
-    getPlant: () => realPlant,
-    getRuntime: () => getRealViewRuntime(),
-    getMode: () => getRealViewRuntime().mode
+const trends = createTrends(document.querySelector('.main-area'), {
+    getRuntime: () => getRealViewRuntime()
 });
-void experimentDashboard;
 
 // LABORATÓRIO DE CÓDIGO (API DE SIMULAÇÃO)
 /* O código do usuário roda num Worker isolado e só alcança a simulação
@@ -135,6 +167,7 @@ const codePanel = createCodePanel({
     pauseSimulation: () => setSim({ running: false }),
     resetSimulation: () => setSim({ reset: true })
 });
+
 
 let controllerBusy = false;
 let lastModeKey = null;
@@ -179,4 +212,7 @@ setInterval(() => {
 
 updateView();
 selectFromHash();
-connectRealPlant();
+
+// Endereço do backend: ws://localhost:8765, ou ?ws=ws://host:porta na URL
+const backendUrl = new URLSearchParams(location.search).get('ws');
+connectRealPlant(backendUrl && /^wss?:\/\/[\w.\-]+(:\d+)?\/?$/.test(backendUrl) ? backendUrl : undefined);

@@ -12,8 +12,9 @@ A mesma página web opera:
 
 A tela é o fluxograma de processo (P&ID) ao vivo. Clicar em um instrumento,
 válvula, bomba ou tanque abre o painel (faceplate) com setpoint, modo
-AUTO/MAN, saída manual e sintonia. Tendências e exportação em CSV ficam na
-gaveta inferior; o laboratório de código, na barra superior.
+AUTO/MAN, saída manual e sintonia. A aba **Tendências** da barra superior
+troca para a tela de gráficos e registro de ensaios em CSV; o laboratório de
+código fica em **Código / API**.
 
 ## Estrutura
 
@@ -24,7 +25,7 @@ src/
   synoptic.js             fluxograma SVG ao vivo (geometria do P&ID)
   faceplate.js            painéis de malha, bomba, válvula, tanque e sensores
   topbar.js               modo, conexão, cenário, controle da simulação, alarmes
-  experiment-dashboard.js tendências, registro e exportação CSV
+  trends.js               tendências, registro de ensaios e exportação CSV
   simulation-api.js       API do laboratório de código (ver SIMULATION_API.md)
   component-labels.js     tags ISA e descrições (só apresentação)
   hmi.css, style.css      estilos
@@ -76,18 +77,62 @@ O script localiza o ambiente `seistanques`, gera as FMUs na primeira vez
 `http://127.0.0.1:5173`. A HMI conecta sozinha.
 
 Na barra superior: escolha o **cenário**, clique em **Rodar** e ajuste a
-**velocidade** (0,25× a 10×). As malhas começam em MAN; no faceplate de cada
-controlador passe para AUTO e ajuste o SP.
+**velocidade** (0,25× a 10×). As malhas já começam em AUTO e a planta parte
+dos tanques vazios; no faceplate de cada controlador dá para mudar SP, passar
+para MAN e ajustar a sintonia. **Todas AUTO** / **Todas MAN** mudam o modo
+de todas as malhas de uma vez.
 
 Cenários:
 
 | Cenário | Malhas |
 |---|---|
 | Nível | LIC-101: LT-101 → LV-103 · LIC-102: LT-102 → LV-104 · LIC-103: LT-103 → LV-101 · LIC-104: LT-104 → LV-102 |
-| Vazão por válvula | FIC-101: FT-101 → LV-101 · FIC-102: FT-102 → LV-102 · FIC-105: FT-105 → LV-103 · FIC-106: FT-106 → LV-104 |
-| Vazão por bomba | FIC-103: FT-101 + FT-102 → B-103 · FIC-105: FT-105 → B-101 · FIC-106: FT-106 → B-102 |
+| Vazão por válvula | FIC-101: FT-101 → LV-101 · FIC-102: FT-102 → LV-102 · LIC-103: LT-103 → LV-103 · LIC-104: LT-104 → LV-104 |
+| Vazão por bomba | FIC-103: FT-101 + FT-102 → B-103 · LIC-103: LT-103 → B-101 · LIC-104: LT-104 → B-102 |
 
-Os pareamentos e as sintonias iniciais estão em `python/cenarios.py`.
+TQ-103 e TQ-104 não têm descarga por gravidade (são integradores), por isso
+os cenários de vazão também seguram o nível deles pelo atuador de saída.
+Pareamentos, SP, sintonias (SIMC a partir de degraus no modelo) e as
+aberturas de operação das válvulas manuais estão em `python/cenarios.py`.
+
+**Estimativas de operação.** Com os padrões do v13 (HV com Cv 1000, "sem
+perda") as descargas por gravidade escoam quase toda a vazão da B-103 e os
+tanques não passam de 4 cm. Para a simulação ter um ponto de operação útil,
+`cenarios.py#PARAMETROS_PLANTA` usa Cv 10 nas HV totalmente abertas e cada
+cenário define a abertura das HV (HV-105/106 a 40 %, recirculação a 30 %,
+HV-101/102 abertas). São estimativas, não medições: substituir quando houver
+o ensaio de esvaziamento e a abertura real das HV na bancada (ver cabeçalho
+de `modelica/modelo_6tanques_v13.mo`). As sintonias precisam ser refeitas
+depois disso.
+
+### Tendências
+
+A barra superior alterna entre as telas **Processo** (fluxograma) e
+**Tendências** (`#tendencias` no fim da URL abre direto nela). A tela de
+tendências não tem rolagem: são três janelas com o mesmo eixo de tempo.
+
+1. **Nível dos tanques**: LT-101 a LT-106, em cm.
+2. **Variáveis controladas**: PV (linha) e SP (degrau claro, na mesma cor) de
+   cada malha do cenário. Quando o cenário mistura unidades (vazão em L/min e
+   nível em cm), a janela se divide lado a lado, uma parte por grandeza.
+3. **Variáveis manipuladas**: a saída de cada controlador em %, com uma faixa
+   de eventos por malha embaixo (âmbar = malha em MAN).
+
+Na planta real, sem malhas, a segunda janela mostra as vazões medidas.
+
+A legenda à direita de cada janela mostra os valores no instante do cursor.
+Clicar numa malha da legenda a destaca nas três janelas, e **Ver tendência**
+no faceplate da malha faz o mesmo. A roda do mouse muda a janela de tempo
+(1 min a 1 h), arrastar navega no histórico e **Ao vivo** volta ao tempo
+atual. Nos níveis, a cor indica o andar (azul inferior, verde intermediário,
+rosa superior) e o tracejado o lado direito; nas malhas, cada malha tem uma
+cor (com quatro malhas, a cor indica o par e o tracejado o lado direito).
+
+**Gravar** registra todas as variáveis a cada 0,1 s (tempo de simulação ou
+relógio, na planta real) até **Parar**; **Exportar CSV** gera o arquivo no
+padrão brasileiro (`;` e vírgula decimal), com colunas nomeadas pelas tags do
+P&ID. Dado ausente fica como célula vazia. Na planta real, o estado dos
+atuadores não é medido e aparece como ausente.
 
 Manualmente (PowerShell):
 

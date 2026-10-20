@@ -117,8 +117,8 @@ const FLOW_ARROWS = [
 const LOOP_LAYOUT = {
     'LIC-101': { x: 645, y: 360, pv: ['M645,596 V380'], mv: { V3: 'M625,360 H455 V760 H401 V709', V4: 'M775,360 H945 V760 H999 V709' }, text: [620, 392, 'end'] },
     'LIC-102': { x: 755, y: 360, pv: ['M755,596 V380'], mv: { V4: 'M775,360 H945 V760 H999 V709', V3: 'M625,360 H455 V760 H401 V709' }, text: [780, 392, 'start'] },
-    'LIC-103': { x: 125, y: 720, pv: ['M125,634 V700'], mv: { V1: 'M106,720 H40 V24 H600 V177', V2: 'M106,720 H40 V24 H800 V177' } },
-    'LIC-104': { x: 1275, y: 720, pv: ['M1275,634 V700'], mv: { V2: 'M1294,720 H1360 V46 H800 V177', V1: 'M1294,720 H1360 V46 H600 V177' } },
+    'LIC-103': { x: 125, y: 720, pv: ['M125,634 V700'], mv: { V1: 'M106,720 H40 V24 H600 V177', V2: 'M106,720 H40 V24 H800 V177', V3: 'M145,720 H401 V709', P1: 'M106,720 H85 V790 H208' } },
+    'LIC-104': { x: 1275, y: 720, pv: ['M1275,634 V700'], mv: { V2: 'M1294,720 H1360 V46 H800 V177', V1: 'M1294,720 H1360 V46 H600 V177', V4: 'M1255,720 H999 V709', P2: 'M1294,720 H1315 V790 H1192' } },
     'FIC-101': { x: 560, y: 120, pv: ['M655,153 V120 H579'], mv: { V1: 'M560,139 V160 H600 V177' } },
     'FIC-102': { x: 840, y: 120, pv: ['M745,153 V120 H821'], mv: { V2: 'M840,139 V160 H800 V177' } },
     'FIC-103': { x: 645, y: 290, pv: ['M641,191 V271', 'M745,191 V290 H664'], mv: { P3: 'M645,309 V330 H665 V800 H680' }, text: [620, 286, 'end'] },
@@ -531,13 +531,18 @@ export function createSynoptic(container, { onSelect = () => {} } = {}) {
             setAlarm(node.alarm, PV_SENSOR_OF_TANK[tank.id]);
         }
 
+        // Planta real em somente leitura: o estado dos atuadores não é medido,
+        // então não se mostra o valor padrão do backend como se fosse real.
+        const atuadoresDesconhecidos = runtime.backendMode === 'HARDWARE' || !runtime.connected;
+
         // BOMBAS
         for (const pump of plant.pumps) {
             const node = pumps[pump.id];
             if (!node) continue;
-            const on = Boolean(pump.power) && pump.command > 0;
+            const on = !atuadoresDesconhecidos && Boolean(pump.power) && pump.command > 0;
             node.g.classList.toggle('running', on);
-            node.status.textContent = on ? pct(pump.command) : 'parada';
+            node.g.classList.toggle('no-data', atuadoresDesconhecidos);
+            node.status.textContent = atuadoresDesconhecidos ? '—' : on ? pct(pump.command) : 'parada';
             setAlarm(node.alarm, pump.id);
         }
 
@@ -545,8 +550,8 @@ export function createSynoptic(container, { onSelect = () => {} } = {}) {
         for (const valve of plant.actuatedValves) {
             const node = controlValves[valve.id];
             if (!node) continue;
-            node.value.textContent = pct(valve.opening);
-            node.g.classList.toggle('closed', valve.opening <= 0.001);
+            node.value.textContent = atuadoresDesconhecidos ? '—' : pct(valve.opening);
+            node.g.classList.toggle('closed', !atuadoresDesconhecidos && valve.opening <= 0.001);
         }
 
         // VÁLVULAS DE 3 VIAS
@@ -557,7 +562,8 @@ export function createSynoptic(container, { onSelect = () => {} } = {}) {
             node.ports.B.classList.toggle('open', Boolean(b?.state));
             node.ports.in.classList.toggle('open', Boolean(a?.state || b?.state));
             const timing = runtime.xv?.[id];
-            if (timing) node.value.textContent = `A ${fmt(timing.tA, 0)} s · B ${fmt(timing.tB, 0)} s`;
+            if (atuadoresDesconhecidos) node.value.textContent = '—';
+            else if (timing) node.value.textContent = `A ${fmt(timing.tA, 0)} s · B ${fmt(timing.tB, 0)} s`;
             else node.value.textContent = a?.state ? 'porta A' : b?.state ? 'porta B' : 'fechada';
         }
 
@@ -566,8 +572,8 @@ export function createSynoptic(container, { onSelect = () => {} } = {}) {
         for (const valve of manual) {
             const node = manualValves[valve.id];
             if (!node) continue;
-            node.value.textContent = pct(valve.opening);
-            node.g.classList.toggle('closed', valve.opening <= 0.001);
+            node.value.textContent = atuadoresDesconhecidos ? '—' : pct(valve.opening);
+            node.g.classList.toggle('closed', !atuadoresDesconhecidos && valve.opening <= 0.001);
         }
 
         // TRANSMISSORES

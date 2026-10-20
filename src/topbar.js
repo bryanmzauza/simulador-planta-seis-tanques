@@ -31,6 +31,7 @@ export function createTopbar(header, alarmBar, actions = {}) {
         setRunning: () => {},
         reset: () => {},
         setSpeed: () => {},
+        setView: () => {},
         ...actions
     };
 
@@ -41,6 +42,16 @@ export function createTopbar(header, alarmBar, actions = {}) {
         h('h1', { text: 'Planta de Seis Tanques' }),
         h('p', { text: 'Supervisório · UFRGS' })
     ]));
+
+    // Telas: Processo | Tendências
+    const viewTabs = h('nav', { class: 'tb-views', 'aria-label': 'Telas' });
+    const viewButtons = {};
+    for (const [id, rotulo] of [['processo', 'Processo'], ['tendencias', 'Tendências']]) {
+        const botao = h('button', { type: 'button', class: 'tb-view', 'aria-pressed': 'false', onclick: () => act.setView(id) }, [rotulo]);
+        viewButtons[id] = botao;
+        viewTabs.append(botao);
+    }
+    header.append(viewTabs);
 
     // Modo
     const modeBadge = h('span', { class: 'tb-mode offline', text: 'SEM CONEXÃO' });
@@ -56,7 +67,7 @@ export function createTopbar(header, alarmBar, actions = {}) {
     const scenarioSelect = h('select', { 'aria-label': 'Cenário de controle', onchange: () => act.setScenario(scenarioSelect.value) });
     const allAuto = h('button', { type: 'button', text: 'Todas AUTO', title: 'Põe todas as malhas do cenário em automático', onclick: () => act.setAllLoops('AUTO') });
     const allMan = h('button', { type: 'button', text: 'Todas MAN', title: 'Põe todas as malhas do cenário em manual', onclick: () => act.setAllLoops('MAN') });
-    const scenarioGroup = h('div', { class: 'tb-group' }, [h('label', { text: 'Cenário' }), scenarioSelect, allAuto, allMan]);
+    const scenarioGroup = h('div', { class: 'tb-group' }, [h('label', { class: 'tb-sim-label', text: 'Cenário' }), scenarioSelect, allAuto, allMan]);
     scenarioGroup.hidden = true;
     header.append(scenarioGroup);
 
@@ -67,7 +78,7 @@ export function createTopbar(header, alarmBar, actions = {}) {
     for (const speed of SPEEDS) speedSelect.append(h('option', { value: String(speed), text: `${String(speed).replace('.', ',')}×` }));
     const timeLabel = h('span', { class: 'tb-time', text: 't = 0,0 s' });
     const ratioLabel = h('span', { class: 'tb-ratio' });
-    const simGroup = h('div', { class: 'tb-group' }, [runButton, resetButton, h('label', { text: 'Veloc.' }), speedSelect, timeLabel, ratioLabel]);
+    const simGroup = h('div', { class: 'tb-group' }, [runButton, resetButton, h('label', { class: 'tb-sim-label', text: 'Veloc.' }), speedSelect, timeLabel, ratioLabel]);
     simGroup.hidden = true;
     header.append(simGroup);
 
@@ -166,5 +177,13 @@ export function createTopbar(header, alarmBar, actions = {}) {
         }
     }
 
-    return { update };
+    function setView(view) {
+        for (const [id, botao] of Object.entries(viewButtons)) {
+            const ativo = id === view;
+            botao.classList.toggle('active', ativo);
+            botao.setAttribute('aria-pressed', String(ativo));
+        }
+    }
+
+    return { update, setView };
 }
