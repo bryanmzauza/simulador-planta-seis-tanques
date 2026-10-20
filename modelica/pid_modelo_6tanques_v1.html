@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P&amp;ID seis tanques v1</title>
+<style>
+/* Folha sempre em fundo branco, também com o sistema em modo escuro */
+:root {
+  color-scheme: light;
+  --bg: #ffffff; --paper: #ffffff; --ink: #1c1d21; --muted: #5f6168;
+  --rule: #d9d9d9; --sig: #2563a8; --hi: #c2410c; --water: #eaf2fb;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1320px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; margin-bottom: 14px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+.subt { color: var(--muted); margin: 2px 0 0; }
+code { font: 12.5px ui-monospace, "Cascadia Code", Consolas, monospace; }
+.toggles { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+.toggles label { display: flex; gap: 6px; align-items: center; cursor: pointer; user-select: none; }
+select { font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 2px 6px; }
+.card { background: var(--paper); border: 1px solid var(--rule); border-radius: 10px; }
+.sheet { overflow-x: auto; }
+.sheet svg { display: block; width: 100%; min-width: 960px; height: auto; }
+.hint { color: var(--muted); font-size: 12.5px; margin: 8px 2px 18px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
+.loops td { white-space: nowrap; }
+.grid .card { padding: 14px 16px; }
+.wide { grid-column: 1 / -1; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+td:first-child { font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+.cols { columns: 2 340px; column-gap: 24px; }
+.cols table { break-inside: avoid; }
+ul { margin: 0; padding-left: 18px; }
+li { margin: 3px 0; }
+.legend { display: grid; grid-template-columns: 56px 1fr; gap: 6px 10px; align-items: center; font-size: 13px; }
+.legend svg { width: 56px; height: 34px; }
+.warn { margin-top: 10px; padding: 8px 10px; border-left: 3px solid var(--hi); background: color-mix(in srgb, var(--hi) 8%, transparent); font-size: 13px; }
+
+/* SVG */
+.pipe { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
+.sig { fill: none; stroke: var(--sig); stroke-width: 1.4; stroke-dasharray: 7 4; }
+.conn { stroke: var(--ink); stroke-width: 1.2; }
+.sym { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
+.symi { fill: none; stroke: var(--sig); stroke-width: 1.4; }
+.ctlbox { fill: var(--paper); stroke: var(--sig); stroke-width: 1.4; }
+.stem { stroke: var(--ink); stroke-width: 1.4; }
+.vessel { fill: var(--water); }
+.dot { fill: var(--ink); }
+.ah { fill: var(--ink); }
+.ahs { fill: var(--sig); }
+.tk { font: 700 17px system-ui, sans-serif; fill: var(--ink); text-anchor: middle; }
+.lbl { font: 600 12.5px system-ui, sans-serif; fill: var(--ink); }
+.sub { font: 11px system-ui, sans-serif; fill: var(--muted); text-anchor: middle; }
+.note { font: 11.5px system-ui, sans-serif; fill: var(--muted); }
+.blk { font: 700 11.5px system-ui, sans-serif; fill: var(--ink); letter-spacing: 0.04em; }
+.frame { fill: none; stroke: var(--muted); stroke-width: 1; }
+.frameLine { stroke: var(--rule); stroke-width: 1; }
+.tagL { font: 700 10.5px ui-monospace, Consolas, monospace; fill: var(--ink); text-anchor: middle; }
+.tagN { font: 10.5px ui-monospace, Consolas, monospace; fill: var(--ink); text-anchor: middle; }
+.ctl .tagL, .ctl .tagN { fill: var(--sig); }
+.act { font: 700 9px system-ui, sans-serif; fill: var(--ink); text-anchor: middle; }
+.port { font: 700 10px ui-monospace, Consolas, monospace; fill: var(--muted); }
+.comp { cursor: help; outline: none; }
+.comp:hover .sym, .comp:focus .sym, .comp:hover .ctlbox, .comp:focus .ctlbox { stroke: var(--hi); stroke-width: 2.2; }
+svg.no-ctl .ctl { display: none; }
+
+#tip { position: fixed; pointer-events: none; max-width: 360px; padding: 8px 10px; border-radius: 8px;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--rule);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18); font-size: 12.5px; line-height: 1.45; display: none; z-index: 10; white-space: pre-line; }
+#tip b { display: block; margin-bottom: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>P&amp;ID: planta de seis tanques, modelo v1</h1>
+      <p class="subt"><code>SeisTanques_v1.SixTanks</code> em <code>modelo_6tanques_v1.mo</code>. Equipamentos TQ/B, instrumentos e válvulas pela ANSI/ISA-5.1; malhas do <code>MF_ST</code>.</p>
+    </div>
+    <div class="toggles">
+      <label><input type="checkbox" id="optCtl" checked> Malhas de controle (MF_ST)</label>
+      <label>Rótulos
+        <select id="optNames">
+          <option value="isa">Tags ISA</option>
+          <option value="hmi">Nomes da HMI</option>
+          <option value="code">IDs do código</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <div class="card sheet"><svg id="pid" viewBox="0 -4 1400 968" role="img" aria-label="P&amp;ID da planta de seis tanques, modelo v1"></svg></div>
+  <p class="hint">Passe o mouse (ou use Tab) sobre um equipamento para ver a equação e os parâmetros dele no modelo.</p>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Legenda</h2>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <section class="card">
+      <h2>Malhas do MF_ST</h2>
+      <table class="loops">
+        <tr><th>Malha</th><th>PV</th><th>MV</th><th>Kp</th><th>Ti</th><th>SP</th></tr>
+        <tr><td>LIC-101</td><td>LT-101</td><td>LV-102</td><td>0,062</td><td>33 s</td><td>9 → 8 cm</td></tr>
+        <tr><td>LIC-102</td><td>LT-102</td><td>LV-101</td><td>0,062</td><td>33 s</td><td>9 → 10 cm</td></tr>
+        <tr><td>LIC-103</td><td>LT-103</td><td>LV-103</td><td>−0,051</td><td>40 s</td><td>12 → 13 cm</td></tr>
+        <tr><td>LIC-104</td><td>LT-104</td><td>LV-104</td><td>−0,051</td><td>40 s</td><td>12 → 11 cm</td></tr>
+      </table>
+      <p class="subt" style="font-size:13px;margin-top:8px">Degrau de SP em t = 300 s. Pareamento cruzado: com r = 0,15, a maior parte da vazão de LV-102 chega a TQ-101 por TQ-105 → TQ-103 → TQ-101. Por isso LIC-101 manipula LV-102 e LIC-102 manipula LV-101. PI (Td = 0), bombas em rotação 1, r_XV101 = r_XV102 = 0,15.</p>
+      <div class="warn">A sintonia é a da v12, feita com a bomba alternando entre os ramos. Com B-103 em paralelo a malha fica instável (oscilação crescente). Refazer pelo <code>SixTanks_MA</code>.</div>
+    </section>
+
+    <section class="card">
+      <h2>Ainda não medido (padrões da v12)</h2>
+      <ul>
+        <li>Área, perfil e altura útil dos tanques (63 cm², 30 cm)</li>
+        <li>CD e expoente das descargas (CD = 0,2·√(2·981), p = 0,6)</li>
+        <li>Curvas das bombas (K = 100 cm.c.a., F_max = 83 cm³/s)</li>
+        <li>Cv das LV-101…104 (15) e das HV; desníveis dz_B*</li>
+        <li>Divisão real nas XV-101/XV-102 com as duas portas abertas (hoje 50/50)</li>
+        <li>Cota da tomada de pressão dos LT em relação ao fundo</li>
+      </ul>
+      <p class="subt" style="font-size:13px;margin-top:8px">Transbordamento acima de h_max sai do sistema. O reservatório TQ-100 não tem balanço: é uma fonte infinita.</p>
+    </section>
+
+    <section class="card wide">
+      <h2>Lista de tags</h2>
+      <div class="cols">
+        <table>
+          <tr><th>Tag</th><th>Descrição</th><th>HMI</th><th>Código</th></tr>
+          <tr><td>TQ-100</td><td>Reservatório</td><td>—</td><td>—</td></tr>
+          <tr><td>TQ-101…106</td><td>Tanques</td><td>T1…T6</td><td>H1…H6</td></tr>
+          <tr><td>B-101</td><td>Bomba, sucção de TQ-103</td><td>B1</td><td>P1</td></tr>
+          <tr><td>B-102</td><td>Bomba, sucção de TQ-104</td><td>B2</td><td>P2</td></tr>
+          <tr><td>B-103</td><td>Bomba, sucção do reservatório</td><td>B3</td><td>P3</td></tr>
+          <tr><td>LV-101</td><td>Válvula de controle (servo 1) → XV-101</td><td>V1</td><td>V1</td></tr>
+          <tr><td>LV-102</td><td>Válvula de controle (servo 2) → XV-102</td><td>V2</td><td>V2</td></tr>
+          <tr><td>LV-103</td><td>Válvula de controle (servo 3), B-101 → TQ-101</td><td>V3</td><td>V3</td></tr>
+          <tr><td>LV-104</td><td>Válvula de controle (servo 4), B-102 → TQ-102</td><td>V4</td><td>V4</td></tr>
+          <tr><td>XV-101</td><td>3 vias: A → TQ-103, B → TQ-106</td><td>X1A/X1B</td><td>X1A/X1B</td></tr>
+          <tr><td>XV-102</td><td>3 vias: A → TQ-105, B → TQ-104</td><td>X2A/X2B</td><td>X2A/X2B</td></tr>
+        </table>
+        <table>
+          <tr><th>Tag</th><th>Descrição</th><th>HMI</th><th>Código</th></tr>
+          <tr><td>XY-101A/B</td><td>Solenoides de XV-101 (relés 1, 2)</td><td>X1A, X1B</td><td>X1A, X1B</td></tr>
+          <tr><td>XY-102A/B</td><td>Solenoides de XV-102 (relés 3, 4)</td><td>X2A, X2B</td><td>X2A, X2B</td></tr>
+          <tr><td>HV-101, 102</td><td>Descarga TQ-101/102 → TQ-100</td><td>VM1, VM2</td><td>HV1_DRAIN, HV2_DRAIN</td></tr>
+          <tr><td>HV-103, 104</td><td>Sucção de B-101/B-102</td><td>VM3, VM4</td><td>HV3_P1, HV4_P2</td></tr>
+          <tr><td>HV-105, 106</td><td>TQ-105 → TQ-103, TQ-106 → TQ-104</td><td>VM5, VM6</td><td>HV3_IN, HV4_IN</td></tr>
+          <tr><td>HV-107, 108</td><td>Recirculação de B-101/B-102</td><td>VR3, VR4</td><td>RV1, RV2</td></tr>
+          <tr><td>HV-109</td><td>Descarga de B-103</td><td>VMC</td><td>MV</td></tr>
+          <tr><td>LT-101…106</td><td>Nível (MPX5010), em kPa</td><td>LT1…LT6</td><td>LT1…LT6</td></tr>
+          <tr><td>FT-101, 102</td><td>Vazão antes de LV-101, LV-102 (L/min)</td><td>FT3, FT6</td><td>FT3, FT6</td></tr>
+          <tr><td>FT-103, 104</td><td>Vazão XV-102 A → TQ-105, XV-101 B → TQ-106 (L/min)</td><td>FT1, FT2</td><td>FT1, FT2</td></tr>
+          <tr><td>FT-105, 106</td><td>Vazão LV-103 → TQ-101, LV-104 → TQ-102 (L/min)</td><td>FT4, FT5</td><td>FT4, FT5</td></tr>
+          <tr><td>LIC-101…104</td><td>Controladores PI do MF_ST</td><td>—</td><td>—</td></tr>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+<div id="tip"></div>
+
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('pid');
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  parent.appendChild(e);
+  return e;
+}
+function txt(parent, x, y, s, cls, anchor) {
+  const t = el('text', { x, y, class: cls }, parent);
+  if (anchor) t.setAttribute('text-anchor', anchor);
+  t.textContent = s;
+  return t;
+}
+
+// Tag ISA -> [nome na HMI, id no código (src/, API, telemetria)]
+const NAMES = {
+  'TQ-100': ['', ''],
+  'TQ-101': ['T1', 'H1'], 'TQ-102': ['T2', 'H2'], 'TQ-103': ['T3', 'H3'],
+  'TQ-104': ['T4', 'H4'], 'TQ-105': ['T5', 'H5'], 'TQ-106': ['T6', 'H6'],
+  'B-101': ['B1', 'P1'], 'B-102': ['B2', 'P2'], 'B-103': ['B3', 'P3'],
+  'LV-101': ['V1', 'V1'], 'LV-102': ['V2', 'V2'], 'LV-103': ['V3', 'V3'], 'LV-104': ['V4', 'V4'],
+  'XV-101': ['X1A/X1B', 'X1A/X1B'], 'XV-102': ['X2A/X2B', 'X2A/X2B'],
+  'HV-101': ['VM1', 'HV1_DRAIN'], 'HV-102': ['VM2', 'HV2_DRAIN'], 'HV-103': ['VM3', 'HV3_P1'],
+  'HV-104': ['VM4', 'HV4_P2'], 'HV-105': ['VM5', 'HV3_IN'], 'HV-106': ['VM6', 'HV4_IN'],
+  'HV-107': ['VR3', 'RV1'], 'HV-108': ['VR4', 'RV2'], 'HV-109': ['VMC', 'MV']
+};
+const swapLabels = [];
+function name(parent, x, y, tag, cls, anchor) {
+  const t = txt(parent, x, y, tag, cls, anchor);
+  if (NAMES[tag]) swapLabels.push([t, tag, ...NAMES[tag]]);
+  return t;
+}
+// Cabeçalho do tooltip: tag ISA e, entre parênteses, os nomes da HMI e do código
+function head(tag, desc) {
+  const [hmi, code] = NAMES[tag] || ['', ''];
+  const alt = hmi ? ` (HMI ${hmi}${code && code !== hmi ? ', código ' + code : ''})` : '';
+  return `${tag}, ${desc}${alt}`;
+}
+
+// ---------- definições ----------
+const defs = el('defs', {}, svg);
+for (const [id, cls] of [['arw', 'ah'], ['arws', 'ahs']]) {
+  const m = el('marker', { id, viewBox: '0 0 10 10', refX: 10, refY: 5, markerWidth: 10, markerHeight: 10,
+    markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);
+  el('path', { d: 'M0,0 L10,5 L0,10 z', class: cls }, m);
+}
+
+const gPipes = el('g', {}, svg);
+const gSig = el('g', { class: 'ctl' }, svg);
+const gSym = el('g', {}, svg);
+const gCtl = el('g', { class: 'ctl' }, svg);
+
+function comp(tip, parent) {
+  const g = el('g', { class: 'comp', tabindex: 0 }, parent || gSym);
+  g.dataset.tip = tip;
+  return g;
+}
+
+// ---------- símbolos ----------
+function bowtie(g, x, y, vert) {
+  const d = vert
+    ? `M${x - 8},${y - 12} L${x + 8},${y + 12} L${x - 8},${y + 12} L${x + 8},${y - 12} Z`
+    : `M${x - 12},${y - 8} L${x + 12},${y + 8} L${x + 12},${y - 8} L${x - 12},${y + 8} Z`;
+  el('path', { d, class: 'sym' }, g);
+}
+function actuator(g, x, y, dir, kind) {
+  const dx = { up: 0, down: 0, left: -1, right: 1 }[dir], dy = { up: -1, down: 1 }[dir] || 0;
+  el('line', { x1: x, y1: y, x2: x + dx * 20, y2: y + dy * 20, class: 'stem' }, g);
+  const cx = x + dx * 29, cy = y + dy * 29;
+  if (kind === 'M') el('circle', { cx, cy, r: 9, class: 'sym' }, g);
+  else el('rect', { x: cx - 8, y: cy - 8, width: 16, height: 16, class: 'sym' }, g);
+  txt(g, cx, cy + 3.5, kind, 'act');
+}
+function manual(tip, x, y, vert, tag, lx, ly, anchor) {
+  const g = comp(tip);
+  bowtie(g, x, y, vert);
+  name(g, lx, ly, tag, 'lbl', anchor);
+}
+function servo(tip, x, y, vert, dir, tag, lx, ly, anchor) {
+  const g = comp(tip);
+  bowtie(g, x, y, vert);
+  actuator(g, x, y, dir, 'M');
+  name(g, lx, ly, tag, 'lbl', anchor);
+}
+// Válvula de 3 vias: um triângulo por porta, com as pontas no centro
+function threeWaySym(g, x, y, ports) {
+  const tri = {
+    left: `M${x - 12},${y - 8} L${x - 12},${y + 8} L${x},${y} Z`,
+    right: `M${x + 12},${y - 8} L${x + 12},${y + 8} L${x},${y} Z`,
+    up: `M${x - 8},${y - 12} L${x + 8},${y - 12} L${x},${y} Z`,
+    down: `M${x - 8},${y + 12} L${x + 8},${y + 12} L${x},${y} Z`
+  };
+  for (const p of ports) el('path', { d: tri[p], class: 'sym' }, g);
+}
+function threeWay(tip, x, y, ports, tag, lx, ly, anchor, portLabels) {
+  const g = comp(tip);
+  threeWaySym(g, x, y, ports);
+  actuator(g, x, y, 'down', 'S');
+  name(g, lx, ly, tag, 'lbl', anchor);
+  for (const [s, px, py, a] of portLabels) txt(g, px, py, s, 'port', a);
+}
+function pumpSym(g, x, y, out) {
+  el('circle', { cx: x, cy: y, r: 20, class: 'sym' }, g);
+  const tri = {
+    up: `M${x - 9},${y + 7} L${x + 9},${y + 7} L${x},${y - 10} Z`,
+    right: `M${x - 7},${y - 9} L${x - 7},${y + 9} L${x + 10},${y} Z`,
+    left: `M${x + 7},${y - 9} L${x + 7},${y + 9} L${x - 10},${y} Z`
+  }[out];
+  el('path', { d: tri, class: 'dot' }, g);
+}
+function pump(tip, x, y, out, tag, lx, ly, anchor) {
+  const g = comp(tip);
+  pumpSym(g, x, y, out);
+  name(g, lx, ly, tag, 'lbl', anchor);
+}
+function tank(tip, tag, x, y) {
+  const g = comp(tip);
+  el('rect', { x, y, width: 120, height: 170, rx: 14, class: 'sym vessel' }, g);
+  name(g, x + 60, y + 34, tag, 'tk');
+  txt(g, x + 60, y + 52, '63 cm² · 30 cm', 'sub');
+}
+// Número do instrumento: 1xx nas tags ISA, n na HMI e no código
+const instrNums = [];
+function bubbleSym(g, x, y, letters, num, alt) {
+  el('circle', { cx: x, cy: y, r: 19, class: 'sym' }, g);
+  txt(g, x, y - 2, letters, 'tagL');
+  const t = txt(g, x, y + 11, num, 'tagN');
+  if (/^10\d$/.test(num)) instrNums.push([t, num, alt || num.slice(2)]);
+}
+function levelT(tip, n, tx, bx, y) {
+  const g = comp(tip);
+  el('line', { x1: tx, y1: y, x2: bx + (bx > tx ? -19 : 19), y2: y, class: 'conn' }, g);
+  bubbleSym(g, bx, y, 'LT', '10' + n);
+}
+// Elemento de vazão no tubo + transmissor ligado a ele
+function flowT(tip, n, px, py, vert, bx, by, hmi) {
+  const g = comp(tip);
+  if (vert) {
+    el('line', { x1: px + (bx > px ? 7 : -7), y1: py, x2: bx + (bx > px ? -19 : 19), y2: by, class: 'conn' }, g);
+    el('rect', { x: px - 7, y: py - 4, width: 14, height: 8, class: 'sym' }, g);
+  } else {
+    el('line', { x1: px, y1: py + (by > py ? 7 : -7), x2: bx, y2: by + (by > py ? -19 : 19), class: 'conn' }, g);
+    el('rect', { x: px - 4, y: py - 7, width: 8, height: 14, class: 'sym' }, g);
+  }
+  bubbleSym(g, bx, by, 'FT', '10' + n, hmi && String(hmi));
+}
+function controller(tip, n, x, y) {
+  const g = comp(tip, gCtl);
+  el('rect', { x: x - 20, y: y - 20, width: 40, height: 40, class: 'ctlbox' }, g);
+  el('circle', { cx: x, cy: y, r: 19, class: 'symi' }, g);
+  el('line', { x1: x - 19, y1: y, x2: x + 19, y2: y, class: 'symi' }, g);
+  txt(g, x, y - 5, 'LIC', 'tagL');
+  txt(g, x, y + 13, '10' + n, 'tagN');
+}
+function pipe(d, arrow) {
+  const p = el('path', { d, class: 'pipe' }, gPipes);
+  if (arrow) p.setAttribute('marker-end', 'url(#arw)');
+}
+function signal(d) {
+  el('path', { d, class: 'sig', 'marker-end': 'url(#arws)' }, gSig);
+}
+function flowArrow(x, y, dir) {
+  const d = {
+    up: `M${x - 5},${y + 4} L${x + 5},${y + 4} L${x},${y - 5} Z`,
+    down: `M${x - 5},${y - 4} L${x + 5},${y - 4} L${x},${y + 5} Z`,
+    left: `M${x + 4},${y - 5} L${x + 4},${y + 5} L${x - 5},${y} Z`,
+    right: `M${x - 4},${y - 5} L${x - 4},${y + 5} L${x + 5},${y} Z`
+  }[dir];
+  el('path', { d, class: 'dot' }, gPipes);
+}
+function tee(x, y) { el('circle', { cx: x, cy: y, r: 3.5, class: 'dot' }, gPipes); }
+
+// ---------- tubulações ----------
+// Grade: colunas x = 230 (TQ-105/TQ-103/B-101), 540 (TQ-101), 700 (B-103),
+// 860 (TQ-102), 1170 (TQ-106/TQ-104/B-102); linhas y = 130 (tanques de cima),
+// 215 (válvulas de controle e de 3 vias), 470 (tanques do meio), 790 (bombas).
+
+// B-103: TQ-100 -> HV-109 -> LV-101 // LV-102
+pipe('M700,920 V820');
+pipe('M700,780 V215');
+pipe('M700,215 H470');
+pipe('M700,215 H930');
+pipe('M470,215 V60 H1170 V130', true);                         // XV-101, porta B -> TQ-106
+pipe('M930,215 V95 H480 A10,10 0 0 0 460,95 H230 V130', true); // XV-102, porta A -> TQ-105 (salto sobre a linha de TQ-106)
+// TQ-103 e TQ-104: as três entradas chegam por cima
+pipe('M470,215 H350 V410 H240 A10,10 0 0 0 220,410 H198 V470', true);   // XV-101, porta A -> TQ-103 (salto sobre a linha de TQ-105)
+pipe('M930,215 H1050 V410 H1160 A10,10 0 0 1 1180,410 H1202 V470', true); // XV-102, porta B -> TQ-104 (salto sobre a linha de TQ-106)
+pipe('M230,300 V470', true);                                   // TQ-105 -> HV-105 -> TQ-103, no eixo dos dois tanques
+pipe('M1170,300 V470', true);                                  // TQ-106 -> HV-106 -> TQ-104, no eixo dos dois tanques
+pipe('M320,790 V440 H262 V470', true);                         // B-101 -> HV-107 -> TQ-103 (recirculação)
+pipe('M1080,790 V440 H1138 V470', true);                       // B-102 -> HV-108 -> TQ-104 (recirculação)
+// B-101: TQ-103 -> HV-103 -> B-101 -> LV-103 -> TQ-101
+pipe('M230,640 V770');
+pipe('M250,790 H430 V430 H540 V470', true);
+// B-102: TQ-104 -> HV-104 -> B-102 -> LV-104 -> TQ-102
+pipe('M1170,640 V770');
+pipe('M1150,790 H970 V430 H860 V470', true);
+// descargas para o reservatório
+pipe('M540,640 V850', true);   // TQ-101 -> HV-101 -> TQ-100
+pipe('M860,640 V850', true);   // TQ-102 -> HV-102 -> TQ-100
+
+for (const [x, y] of [[700, 215], [320, 790], [1080, 790]]) tee(x, y);
+flowArrow(700, 500, 'up');
+flowArrow(535, 215, 'left');
+flowArrow(865, 215, 'right');
+flowArrow(820, 60, 'right');
+flowArrow(640, 95, 'left');
+flowArrow(350, 370, 'down');
+flowArrow(1050, 370, 'down');
+flowArrow(380, 790, 'right');
+flowArrow(1020, 790, 'left');
+flowArrow(430, 480, 'up');
+flowArrow(970, 480, 'up');
+flowArrow(320, 510, 'up');
+flowArrow(1080, 510, 'up');
+
+// ---------- reservatório ----------
+{
+  const g = comp('TQ-100, reservatório\nNível não modelado: é uma fonte infinita.\nRecebe HV-101 e HV-102 e alimenta B-103.\nO transbordamento dos tanques sai do sistema e não volta para cá.');
+  el('path', { d: 'M500,850 V930 H900 V850', class: 'sym vessel' }, g);
+  el('line', { x1: 506, y1: 868, x2: 894, y2: 868, class: 'conn', 'stroke-dasharray': '3 4' }, g);
+  name(g, 620, 900, 'TQ-100', 'lbl', 'middle');
+  txt(g, 620, 916, 'Reservatório', 'sub');
+}
+
+// ---------- tanques ----------
+const qdesc = 'q = abertura · CD · h^0,6 (CD = 0,2·√(2·981))';
+tank(head('TQ-105', 'tanque') + '\nEntra: porta A de XV-102, medida por FT-103.\nSai: HV-105 → TQ-103, por gravidade.\n' + qdesc, 'TQ-105', 170, 130);
+tank(head('TQ-106', 'tanque') + '\nEntra: porta B de XV-101, medida por FT-104.\nSai: HV-106 → TQ-104, por gravidade.\n' + qdesc, 'TQ-106', 1110, 130);
+tank(head('TQ-103', 'tanque') + '\nEntra por cima: HV-105 (de TQ-105), porta A de XV-101 e a recirculação HV-107.\nSai só pela sucção de B-101 (HV-103): sem descarga por gravidade.\nB-101 perde sucção com h < 0,5 cm.', 'TQ-103', 170, 470);
+tank(head('TQ-104', 'tanque') + '\nEntra por cima: HV-106 (de TQ-106), porta B de XV-102 e a recirculação HV-108.\nSai só pela sucção de B-102 (HV-104): sem descarga por gravidade.\nB-102 perde sucção com h < 0,5 cm.', 'TQ-104', 1110, 470);
+tank(head('TQ-101', 'tanque') + '\nEntra: LV-103, medida por FT-105 (bomba B-101).\nSai: HV-101 → TQ-100.\n' + qdesc, 'TQ-101', 480, 470);
+tank(head('TQ-102', 'tanque') + '\nEntra: LV-104, medida por FT-106 (bomba B-102).\nSai: HV-102 → TQ-100.\n' + qdesc, 'TQ-102', 800, 470);
+
+// ---------- bombas ----------
+const curva = 'dP = K·rot²·√(1 − (F/(rot·F_max))²), K = 100 cm.c.a., F_max = 83 cm³/s, dz = 0 (TODO medir)';
+pump(head('B-103', 'bomba') + '\nv12: B-01\nTQ-100 → HV-109 → LV-101 ∥ LV-102, as duas ao mesmo tempo.\nA vazão sai do cruzamento da curva com a condutância HV-109 em série com LV-101 ∥ LV-102.\n' + curva, 700, 800, 'up', 'B-103', 728, 805);
+pump(head('B-101', 'bomba') + '\nv12: B-03\nTQ-103 → HV-103 → B-101 → LV-103 ∥ HV-107.\nVazão multiplicada pelo fator de sucção de TQ-103.\n' + curva, 230, 790, 'right', 'B-101', 230, 830, 'middle');
+pump(head('B-102', 'bomba') + '\nv12: B-04\nTQ-104 → HV-104 → B-102 → LV-104 ∥ HV-108.\nVazão multiplicada pelo fator de sucção de TQ-104.\n' + curva, 1170, 790, 'left', 'B-102', 1170, 830, 'middle');
+
+// ---------- válvulas ----------
+const cvS = 'Cv = 15 cm³/s/√cm.c.a., obturador linear (TODO medir)';
+manual(head('HV-109', 'válvula manual') + '\nDescarga de B-103, em série com LV-101 ∥ LV-102.\nAbertura 1, Cv = 1000: perda desprezível.', 700, 725, true, 'HV-109', 718, 729);
+servo(head('LV-101', 'válvula de controle, servo 1') + '\nv12: FV-01\nAlimenta a válvula de 3 vias XV-101 (A → TQ-103, B → TQ-106).\nVazão medida antes da válvula por FT-101.\n' + cvS + '\nMF_ST: manipulada por LIC-102 (nível de TQ-102, pareamento cruzado).', 600, 215, false, 'up', 'LV-101', 600, 241, 'middle');
+servo(head('LV-102', 'válvula de controle, servo 2') + '\nv12: FV-02\nAlimenta a válvula de 3 vias XV-102 (A → TQ-105, B → TQ-104).\nVazão medida antes da válvula por FT-102.\n' + cvS + '\nMF_ST: manipulada por LIC-101 (nível de TQ-101, pareamento cruzado).', 800, 215, false, 'up', 'LV-102', 800, 241, 'middle');
+servo(head('LV-103', 'válvula de controle, servo 3') + '\nv12: FV-03\nB-101 → TQ-101, em paralelo com HV-107.\n' + cvS + '\nMF_ST: manipulada por LIC-103 (nível de TQ-103, Kp < 0).', 430, 700, true, 'left', 'LV-103', 446, 704);
+servo(head('LV-104', 'válvula de controle, servo 4') + '\nv12: FV-04\nB-102 → TQ-102, em paralelo com HV-108.\n' + cvS + '\nMF_ST: manipulada por LIC-104 (nível de TQ-104, Kp < 0).', 970, 700, true, 'right', 'LV-104', 954, 704, 'end');
+
+const rel = 'usar_reles = false: fração contínua (média de um PWM lento dos relés).\nusar_reles = true: cada solenoide abre ou fecha a sua porta; as duas abertas dividem 50/50 (provisório); as duas fechadas bloqueiam o ramo.';
+threeWay(head('XV-101', 'válvula de 3 vias após LV-101') + '\nPorta A → TQ-103 (solenoide XY-101A, relé 1), fração r_XV101 (padrão 0,15).\nPorta B → TQ-106 (solenoide XY-101B, relé 2), fração 1 − r_XV101.\n' + rel,
+  470, 215, ['right', 'left', 'up'], 'XV-101', 484, 248, 'start', [['A', 452, 207, 'end'], ['B', 480, 199, 'start']]);
+threeWay(head('XV-102', 'válvula de 3 vias após LV-102') + '\nPorta A → TQ-105 (solenoide XY-102A, relé 3), fração 1 − r_XV102.\nPorta B → TQ-104 (solenoide XY-102B, relé 4), fração r_XV102 (padrão 0,15).\n' + rel,
+  930, 215, ['left', 'up', 'right'], 'XV-102', 916, 248, 'end', [['A', 920, 199, 'end'], ['B', 948, 207, 'start']]);
+
+const grav = 'Multiplica a descarga por gravidade: ' + qdesc + '.';
+manual(head('HV-105', 'válvula manual') + '\nTQ-105 → TQ-103. ' + grav, 230, 350, true, 'HV-105', 214, 354, 'end');
+manual(head('HV-106', 'válvula manual') + '\nTQ-106 → TQ-104. ' + grav, 1170, 350, true, 'HV-106', 1186, 354);
+manual(head('HV-101', 'válvula manual') + '\nTQ-101 → TQ-100. ' + grav, 540, 745, true, 'HV-101', 556, 749);
+manual(head('HV-102', 'válvula manual') + '\nTQ-102 → TQ-100. ' + grav, 860, 745, true, 'HV-102', 844, 749, 'end');
+manual(head('HV-103', 'válvula manual') + '\nSucção de B-101 (TQ-103 → B-101). Condutância em série, Cv = 1000.', 230, 690, true, 'HV-103', 246, 694);
+manual(head('HV-104', 'válvula manual') + '\nSucção de B-102 (TQ-104 → B-102). Condutância em série, Cv = 1000.', 1170, 690, true, 'HV-104', 1154, 694, 'end');
+manual(head('HV-107', 'recirculação de B-101') + '\nB-101 → TQ-103, abertura 0,2, Cv = 5.\nSai e volta para TQ-103: não entra no balanço, só divide a vazão de B-101 com LV-103.', 320, 600, true, 'HV-107', 336, 604);
+manual(head('HV-108', 'recirculação de B-102') + '\nB-102 → TQ-104, abertura 0,2, Cv = 5.\nSai e volta para TQ-104: não entra no balanço, só divide a vazão de B-102 com LV-104.', 1080, 600, true, 'HV-108', 1064, 604, 'end');
+
+// ---------- instrumentos ----------
+const lt = n => `LT-10${n}, nível de TQ-10${n} (HMI LT${n})\nMPX5010: kPa = 0,0980665 · h (cm)\nTODO: cota da tomada de pressão em relação ao fundo.`;
+levelT(lt(5), 5, 170, 125, 270);
+levelT(lt(6), 6, 1230, 1275, 270);
+levelT(lt(3), 3, 170, 125, 615);
+levelT(lt(4), 4, 1230, 1275, 615);
+levelT(lt(1), 1, 600, 645, 615);
+levelT(lt(2), 2, 800, 755, 615);
+
+const ft = (n, s, h = n) => `FT-10${n}, vazão ${s} (HMI FT${h})\nL/min = 0,06 · cm³/s`;
+// FT-101 e FT-102 medem a vazão que vai para LV-101 e LV-102, antes das válvulas
+flowT(ft(1, 'de B-103 para LV-101, antes da válvula\nSoma das portas A e B de XV-101', 3), 1, 655, 215, false, 655, 172, 3);
+flowT(ft(2, 'de B-103 para LV-102, antes da válvula\nSoma das portas A e B de XV-102', 6), 2, 745, 215, false, 745, 172, 6);
+flowT(ft(3, 'XV-102 porta A → TQ-105', 1), 3, 380, 95, false, 380, 52, 1);
+flowT(ft(4, 'XV-101 porta B → TQ-106', 2), 4, 1040, 60, false, 1040, 20, 2);
+flowT(ft(5, 'LV-103 → TQ-101', 4), 5, 430, 540, true, 388, 540, 4);
+flowT(ft(6, 'LV-104 → TQ-102', 5), 6, 970, 540, true, 1012, 540, 5);
+
+// ---------- malhas do MF_ST ----------
+signal('M645,596 V380');
+signal('M645,340 V265 H834 V186 H811');
+signal('M755,596 V380');
+signal('M755,340 V275 H566 V186 H589');
+signal('M125,634 V700');
+signal('M145,720 H401 V711');
+signal('M1275,634 V700');
+signal('M1255,720 H999 V711');
+controller('LIC-101, controlador de nível de TQ-101 (MF_ST)\nPV: LT-101 · MV: LV-102 (servo 2, pareamento cruzado)\nPI: Kp = 0,062, Ti = 33 s\nSP: 9 cm, degrau para 8 cm em t = 300 s', 1, 645, 360);
+controller('LIC-102, controlador de nível de TQ-102 (MF_ST)\nPV: LT-102 · MV: LV-101 (servo 1, pareamento cruzado)\nPI: Kp = 0,062, Ti = 33 s\nSP: 9 cm, degrau para 10 cm em t = 300 s', 2, 755, 360);
+controller('LIC-103, controlador de nível de TQ-103 (MF_ST)\nPV: LT-103 · MV: LV-103\nPI: Kp = −0,051, Ti = 40 s (nível sobe → abrir LV-103)\nSP: 12 cm, degrau para 13 cm em t = 300 s', 3, 125, 720);
+controller('LIC-104, controlador de nível de TQ-104 (MF_ST)\nPV: LT-104 · MV: LV-104\nPI: Kp = −0,051, Ti = 40 s (nível sobe → abrir LV-104)\nSP: 12 cm, degrau para 11 cm em t = 300 s', 4, 1275, 720);
+
+// ---------- notas e carimbo ----------
+{
+  const g = el('g', {}, gSym);
+  el('rect', { x: 20, y: 858, width: 400, height: 98, class: 'frame' }, g);
+  txt(g, 32, 878, 'NOTAS', 'blk');
+  txt(g, 32, 897, '1. Transbordamento acima de h_max sai do sistema.', 'note');
+  txt(g, 32, 913, '2. TQ-100 sem balanço de massa (fonte infinita).', 'note');
+  txt(g, 32, 929, '3. HV-107/108: recirculação para o próprio tanque.', 'note');
+  txt(g, 32, 945, '4. Linhas tracejadas: malhas do MF_ST (LIC em software).', 'note');
+
+  el('rect', { x: 980, y: 858, width: 400, height: 98, class: 'frame' }, g);
+  el('line', { x1: 980, y1: 908, x2: 1380, y2: 908, class: 'frameLine' }, g);
+  txt(g, 992, 880, 'P&ID · PLANTA DE SEIS TANQUES', 'blk');
+  txt(g, 992, 898, 'Modelo SeisTanques_v1 (modelo_6tanques_v1.mo)', 'note');
+  txt(g, 992, 928, 'Unidades: nível cm · vazão cm³/s · pressão cm.c.a.', 'note');
+  txt(g, 992, 945, 'FT em L/min · LT em kPa · aberturas e rotações de 0 a 1', 'note');
+}
+
+// ---------- legenda ----------
+const legend = document.getElementById('legend');
+function legendItem(draw, label) {
+  const s = el('svg', { viewBox: '0 0 56 34' }, legend);
+  draw(s);
+  const d = document.createElement('div');
+  d.textContent = label;
+  legend.appendChild(d);
+}
+legendItem(s => { el('line', { x1: 2, y1: 17, x2: 54, y2: 17, class: 'pipe' }, s); }, 'Linha de processo');
+legendItem(s => { el('line', { x1: 2, y1: 17, x2: 54, y2: 17, class: 'sig' }, s); }, 'Sinal (sensor → controlador → atuador)');
+legendItem(s => { el('line', { x1: 2, y1: 22, x2: 54, y2: 22, class: 'pipe' }, s); bowtie(s, 28, 22, false); actuator(s, 28, 22, 'up', 'M'); }, 'Válvula de controle com servo (LV-101…104)');
+legendItem(s => { el('path', { d: 'M2,14 H54 M28,14 V2', class: 'pipe' }, s); threeWaySym(s, 28, 14, ['left', 'right', 'up']); actuator(s, 28, 14, 'down', 'S'); }, 'Válvula de 3 vias com solenoides (XV-101: XY-101A/B; XV-102: XY-102A/B)');
+legendItem(s => { el('line', { x1: 2, y1: 17, x2: 54, y2: 17, class: 'pipe' }, s); bowtie(s, 28, 17, false); }, 'Válvula manual (HV-101…109)');
+legendItem(s => { pumpSym(s, 28, 17, 'right'); }, 'Bomba centrífuga (B-101…103)');
+legendItem(s => { bubbleSym(s, 28, 17, 'FT', '101'); }, 'Instrumento de campo (LT, FT)');
+legendItem(s => { const g = el('g', { class: 'ctl' }, s); el('rect', { x: 11, y: 0, width: 34, height: 34, class: 'ctlbox' }, g); el('circle', { cx: 28, cy: 17, r: 16, class: 'symi' }, g); el('line', { x1: 12, y1: 17, x2: 44, y2: 17, class: 'symi' }, g); }, 'Controlador em software (LIC)');
+
+// ---------- interação ----------
+document.getElementById('optCtl').addEventListener('change', e => svg.classList.toggle('no-ctl', !e.target.checked));
+document.getElementById('optNames').addEventListener('change', e => {
+  const mode = e.target.value;
+  for (const [t, isa, hmi, code] of swapLabels) t.textContent = mode === 'isa' ? isa : mode === 'hmi' ? hmi : code;
+  for (const [t, num, alt] of instrNums) t.textContent = mode === 'isa' ? num : alt;
+});
+
+const tip = document.getElementById('tip');
+function showTip(g, x, y) {
+  const [first, ...rest] = g.dataset.tip.split('\n');
+  tip.innerHTML = '';
+  const b = document.createElement('b');
+  b.textContent = first;
+  tip.appendChild(b);
+  tip.appendChild(document.createTextNode(rest.join('\n')));
+  tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.min(x + 14, innerWidth - w - 8) + 'px';
+  tip.style.top = (y + 14 + h > innerHeight ? y - h - 10 : y + 14) + 'px';
+}
+svg.addEventListener('mousemove', e => {
+  const g = e.target.closest('.comp');
+  if (g) showTip(g, e.clientX, e.clientY); else tip.style.display = 'none';
+});
+svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+svg.addEventListener('focusin', e => {
+  const g = e.target.closest('.comp');
+  if (!g) return;
+  const r = g.getBoundingClientRect();
+  showTip(g, r.right, r.top);
+});
+svg.addEventListener('focusout', () => { tip.style.display = 'none'; });
+</script>
+</body>
+</html>
