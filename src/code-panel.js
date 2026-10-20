@@ -1,15 +1,18 @@
 import { ControllerRunner } from './controller-runner.js';
 
-const example = `// Executado antes de cada passo. Tempo e dt em segundos.
-// Exemplo: degrau de alimentação durante 10 segundos.
+const example = `// Executado a cada ciclo da HMI (100 ms). Tempo e dt em segundos de simulação.
+// Exemplo: degrau de setpoint na malha LIC-101 depois de 60 s.
 if (memory.start === undefined) {
   memory.start = plant.time;
-  log('Ensaio iniciado');
+  log('Ensaio iniciado no cenário', plant.scenario);
 }
-plant.pumps.P3.set(plant.time - memory.start < 10 ? 0.5 : 0);
-// Leitura: plant.tanks.H1.level (0–1), .height (m), .volume (L)
-// Válvula: plant.valves.V3.set(0.4)
-// Relé: plant.relays.X1A.set(true)
+const malha = plant.loops['LIC-101'];
+if (malha) {
+  if (plant.time - memory.start < 1) malha.setMode('AUTO');
+  malha.setSP(plant.time - memory.start < 60 ? 9 : 10);
+}
+// Leitura: plant.tanks.H1.heightCm (cm), .level (0–1); plant.sensors.FT4.flow (L/min)
+// Atuadores (com a malha em MAN): plant.valves.V3.set(0.4); plant.pumps.P1.set(0.8)
 `;
 
 export function createCodePanel({ isSimulationMode, startSimulation, pauseSimulation, resetSimulation }) {
@@ -22,8 +25,8 @@ export function createCodePanel({ isSimulationMode, startSimulation, pauseSimula
         <div class="code-toolbar"><button data-action="run">Executar</button><button data-action="pause">Pausar</button><button data-action="stop">Parar</button><button data-action="reset">Resetar ensaio</button><span role="status" class="code-status">Parado</span></div>
         <label for="controller-source">Código por ciclo — use memory para preservar variáveis</label>
         <textarea id="controller-source" spellcheck="false" aria-describedby="code-help"></textarea>
-        <p id="code-help">Comandos de 0 a 1. Bombas: set(0) desliga; set(v) liga. Pausar congela o ensaio; Parar encerra o código e pausa a simulação. Resetar mantém o código e reinicia tempo e níveis. Alterações no texto valem na próxima execução.</p>
-        <details><summary>Referência da API e isolamento</summary><p>plant.time e dt: segundos; tanks.H1…H6: level (0–1), height (m), volume (L). sensors.LT1…LT6 e FT1…FT6: cópias da telemetria (vazão em L/s). pumps.P1…P3.set(v); valves.MV/V1…V4/RV1/RV2/HV*.set(v); relays.X1A/X1B/X2A/X2B.set(true/false). log(texto) exibe mensagens. Comandos são aplicados juntos após um ciclo válido.</p><p>Worker separado, sem acesso ao DOM da HMI, com rede bloqueada por CSP. Limite de 1 segundo por ciclo. Use códigos de confiança: não é uma garantia contra exaustão de memória do navegador.</p></details>
+        <p id="code-help">Comandos de 0 a 1. Bombas: set(0) desliga; set(v) liga. Atuadores de uma malha em AUTO são recusados pelo backend: use loops[tag].setMode('MAN') antes. Pausar congela o ensaio; Parar encerra o código e pausa a simulação. Resetar mantém o código e reinicia tempo e níveis. Alterações no texto valem na próxima execução.</p>
+        <details><summary>Referência da API e isolamento</summary><p>plant.time e dt: segundos de simulação; plant.scenario: cenário ativo. tanks.H1…H6: level (0–1), heightCm (cm), height (m), volume (L). sensors.LT1…LT6 (level %, heightCm, pressure kPa) e FT1…FT6 (flow em L/min): cópias da telemetria. loops[tag] (ex.: 'LIC-101'): pv, sp, mv, mode, unit e setSP(v), setMode('AUTO'|'MAN'), setMV(0–1). pumps.P1…P3.set(v); valves.MV/V1…V4/RV1/RV2/HV*.set(v); relays.X1A/X1B/X2A/X2B.set(true/false). log(texto) exibe mensagens. Comandos são aplicados juntos após um ciclo válido.</p><p>Worker separado, sem acesso ao DOM da HMI, com rede bloqueada por CSP. Limite de 1 segundo por ciclo. Só atua na simulação Modelica: no modo planta real nada é enviado. Use códigos de confiança: não é uma garantia contra exaustão de memória do navegador.</p></details>
         <div class="code-log-heading"><strong>Logs e erros</strong><button data-action="clear">Limpar</button></div><pre class="code-logs" role="log" aria-live="polite"></pre></div>`;
     document.querySelector('.main-area').append(panel);
     const button = document.createElement('button');

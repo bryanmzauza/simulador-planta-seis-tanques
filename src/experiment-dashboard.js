@@ -30,7 +30,13 @@ const SERIES_COLORS = [
     '#956b20',
     '#a74e59',
     '#785494',
-    '#277e82'
+    '#277e82',
+    '#1c1d21',
+    '#b45309',
+    '#2563a8',
+    '#6b7280',
+    '#9333ea',
+    '#c81e1e'
 ];
 
 function clamp(value, min, max) {
@@ -205,6 +211,7 @@ export class ExperimentDashboard {
                     <select class="experiment-metric-select">
                         <option value="levels">Níveis (%)</option>
                         <option value="flows">Vazões (L/min)</option>
+                        <option value="loops">Malhas (PV, SP e MV)</option>
                     </select>
                 </label>
 
@@ -381,11 +388,7 @@ export class ExperimentDashboard {
 
         this.metricSelect.addEventListener('change', () => {
             this.metric = this.metricSelect.value;
-            this.selectedSeries = new Set(
-                this.metric === 'levels'
-                    ? LEVEL_IDS
-                    : FLOW_IDS
-            );
+            this.selectedSeries = new Set(this.seriesIds());
             this.createSeriesControls();
             this.draw();
         });
@@ -452,8 +455,36 @@ export class ExperimentDashboard {
         });
     }
 
+    // SÉRIES
+    /* Níveis e vazões têm IDs fixos; as malhas dependem do cenário ativo:
+       uma série para PV, SP e MV de cada malha (id "TAG:pv" etc.). */
+
+    seriesIds() {
+        if (this.metric === 'levels') return LEVEL_IDS;
+        if (this.metric === 'flows') return FLOW_IDS;
+        const loops = this.getRuntime()?.loops ?? {};
+        return Object.keys(loops).flatMap(tag => [`${tag}:pv`, `${tag}:sp`, `${tag}:mv`]);
+    }
+
+    seriesLabel(id) {
+        if (this.metric !== 'loops') return componentLabel(id);
+        const [tag, field] = id.split(':');
+        return `${tag} ${field.toUpperCase()}`;
+    }
+
+    sampleValue(sample, id) {
+        if (this.metric === 'levels') return sample.levels[id];
+        if (this.metric === 'flows') return sample.flows[id];
+        const [tag, field] = id.split(':');
+        const loop = sample.loops?.[tag];
+        if (!loop) return null;
+        if (field === 'mv') return finiteOrNull(loop.mv === null ? null : loop.mv * 100);
+        return finiteOrNull(loop[field]);
+    }
+
     createSeriesControls() {
-        const ids = this.metric === 'levels' ? LEVEL_IDS : FLOW_IDS;
+        const ids = this.seriesIds();
+        this.seriesSignature = ids.join('|');
 
         this.seriesContainer.innerHTML = '';
 
@@ -471,7 +502,7 @@ export class ExperimentDashboard {
             color.style.background = SERIES_COLORS[index];
 
             const text = document.createElement('span');
-            text.textContent = componentLabel(id);
+            text.textContent = this.seriesLabel(id);
 
             input.addEventListener('change', () => {
                 if (input.checked) {
@@ -583,8 +614,20 @@ export class ExperimentDashboard {
             actuatedValves: {},
             threeWayValves: {},
             recycleValves: {},
-            manualValves: {}
+            manualValves: {},
+            scenario: runtime.scenario ?? null,
+            loops: {}
         };
+
+        for (const [tag, loop] of Object.entries(runtime.loops ?? {})) {
+            sample.loops[tag] = {
+                pv: finiteOrNull(loop.pv),
+                sp: finiteOrNull(loop.sp),
+                mv: finiteOrNull(loop.mv),
+                mode: loop.effectiveMode ?? loop.mode ?? null,
+                unit: loop.unit ?? ''
+            };
+        }
 
         LEVEL_IDS.forEach(id => {
             const sensor = byId(plant.levelSensors, id);
@@ -1018,6 +1061,14 @@ export class ExperimentDashboard {
             return;
         }
 
+        // Malhas vistas ao longo do registro (o cenário pode ter mudado)
+        const loopTags = [];
+        for (const sample of this.recordedRows) {
+            for (const tag of Object.keys(sample.loops ?? {})) {
+                if (!loopTags.includes(tag)) loopTags.push(tag);
+            }
+        }
+
         const headers = [
             'timestamp_iso',
             'elapsed_s',
@@ -1046,7 +1097,14 @@ export class ExperimentDashboard {
             ...ACTUATED_VALVE_IDS.map(id => `${id}_opening`),
             ...THREE_WAY_IDS.map(id => `${id}_state`),
             ...RECYCLE_IDS.map(id => `${id}_opening`),
-            ...MANUAL_IDS.map(id => `${id}_opening`)
+            ...MANUAL_IDS.map(id => `${id}_opening`),
+            'scenario',
+            ...loopTags.flatMap(tag => [
+                `${tag}_pv`,
+                `${tag}_sp`,
+                `${tag}_mv`,
+                `${tag}_mode`
+            ])
         ];
 
         const first = this.recordedRows[0];
@@ -1085,7 +1143,14 @@ export class ExperimentDashboard {
                 ...ACTUATED_VALVE_IDS.map(id => sample.actuatedValves[id]),
                 ...THREE_WAY_IDS.map(id => sample.threeWayValves[id]),
                 ...RECYCLE_IDS.map(id => sample.recycleValves[id]),
-                ...MANUAL_IDS.map(id => sample.manualValves[id])
+                ...MANUAL_IDS.map(id => sample.manualValves[id]),
+                sample.scenario ?? '',
+                ...loopTags.flatMap(tag => [
+                    sample.loops?.[tag]?.pv ?? null,
+                    sample.loops?.[tag]?.sp ?? null,
+                    sample.loops?.[tag]?.mv ?? null,
+                    sample.loops?.[tag]?.mode ?? ''
+                ])
             ];
         });
 
@@ -1163,7 +1228,11 @@ export class ExperimentDashboard {
             sample => sample.displayTime >= minimumTime && sample.displayTime <= maximumTime
         );
 
-        const ids = this.metric === 'levels' ? LEVEL_IDS : FLOW_IDS;
+        if (this.metric === 'loops' && this.seriesIds().join('|') !== this.seriesSignature) {
+            this.selectedSeries = new Set(this.seriesIds());
+            this.createSeriesControls();
+        }
+        const ids = this.seriesIds();
         const selectedIds = ids.filter(id => this.selectedSeries.has(id));
 
         if (visible.length < 2 || selectedIds.length === 0) {
@@ -1186,12 +1255,14 @@ export class ExperimentDashboard {
         let yMin = this.metric === 'levels' ? -5 : 0;
         let yMax = this.metric === 'levels' ? 105 : 100;
 
-        if (this.metric === 'flows') {
+        if (this.metric === 'flows' || this.metric === 'loops') {
             const values = [];
 
             visible.forEach(sample => {
                 selectedIds.forEach(id => {
-                    const value = sample.flows[id];
+                    // MV (em %) fica fora da escala automática: usa a escala cheia
+                    if (this.metric === 'loops' && id.endsWith(':mv')) return;
+                    const value = this.sampleValue(sample, id);
                     if (Number.isFinite(value)) {
                         values.push(value);
                     }
@@ -1314,10 +1385,13 @@ export class ExperimentDashboard {
 
             let started = false;
 
+            // MV das malhas: 0 a 100 % mapeado na altura cheia do gráfico, tracejada
+            const isMv = this.metric === 'loops' && id.endsWith(':mv');
+            ctx.setLineDash(isMv ? [4, 3] : []);
+
             visible.forEach(sample => {
-                const value = this.metric === 'levels'
-                    ? sample.levels[id]
-                    : sample.flows[id];
+                let value = this.sampleValue(sample, id);
+                if (isMv && Number.isFinite(value)) value = yMin + (value / 100) * (yMax - yMin);
 
                 if (!Number.isFinite(value)) {
                     started = false;
@@ -1336,6 +1410,14 @@ export class ExperimentDashboard {
             });
 
             ctx.stroke();
+            ctx.setLineDash([]);
         });
+
+        if (this.metric === 'loops') {
+            ctx.fillStyle = '#54616a';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'top';
+            ctx.fillText('MV tracejada: 0 a 100 % na altura do gráfico', width - padding.right - 3, padding.top + 2);
+        }
     }
 }

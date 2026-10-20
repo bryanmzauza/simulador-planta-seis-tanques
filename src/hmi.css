@@ -1,0 +1,448 @@
+/* HMI DA PLANTA DE SEIS TANQUES
+   Sistema de cores: ISA-101 sobre a paleta do P&ID. O normal é cinza e
+   branco; cor só para água em movimento, sinais de controle, modo MAN e
+   alarmes (cada um com forma ou texto além da cor). Só tema claro. */
+
+:root {
+    color-scheme: light;
+
+    /* Paleta do P&ID */
+    --paper: #ffffff;
+    --ink: #1c1d21;
+    --muted: #5f6168;
+    --rule: #d9d9d9;
+    --sig: #2563a8;
+    --hi: #c2410c;
+    --water: #eaf2fb;
+    --water-fill: #cfe0f5;
+    --water-pipe: #9cc3ea;
+
+    /* ISA-101 */
+    --bg: #e6e8eb;
+    --panel: #f3f4f6;
+    --equip-on: #4b5563;
+    --man: #b45309;
+    --man-bg: #fdf1e2;
+    --alarm-1: #c81e1e;
+    --alarm-2: #c2410c;
+    --alarm-3: #d9a400;
+    --bad: #9333ea;
+    --ok: #2f7d4f;
+
+    --sidebar-font-scale: 1.12;
+    --faceplate-width: 340px;
+    --topbar-height: 56px;
+    --alarmbar-height: 30px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* LAYOUT */
+
+.app {
+    display: grid;
+    grid-template-rows: var(--topbar-height) minmax(0, 1fr) var(--alarmbar-height);
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.main-area {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.synoptic-wrap {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    padding: 8px;
+}
+
+/* BARRA SUPERIOR */
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 14px;
+    background: var(--panel);
+    border-bottom: 1px solid #c9ccd1;
+    overflow: hidden;
+}
+
+.tb-brand h1 {
+    margin: 0;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+}
+
+.tb-brand p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.tb-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border-left: 1px solid #c9ccd1;
+    height: 38px;
+    white-space: nowrap;
+}
+
+.tb-group label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.tb-mode {
+    padding: 3px 9px;
+    border-radius: 4px;
+    border: 1px solid #9aa0a6;
+    background: var(--paper);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+}
+
+.tb-mode.modelica { border-color: var(--sig); color: var(--sig); }
+.tb-mode.hardware { border-color: var(--ink); color: var(--ink); }
+.tb-mode.offline { border-color: #9aa0a6; color: var(--muted); border-style: dashed; }
+
+.tb-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #9aa0a6;
+    border: 1px solid #6b7075;
+}
+
+.tb-dot.connected { background: var(--ok); border-color: #1f5c38; }
+.tb-dot.connecting { background: var(--alarm-3); border-color: #8a6a00; }
+
+.tb-time {
+    font-variant-numeric: tabular-nums;
+    min-width: 92px;
+}
+
+.tb-ratio {
+    color: var(--alarm-2);
+    font-size: 11px;
+}
+
+.tb-spacer { flex: 1; }
+
+.tb-alarms {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tb-alarm-count {
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #9aa0a6;
+    color: var(--paper);
+    font-weight: 700;
+    text-align: center;
+    font-size: 11px;
+}
+
+.tb-alarm-count.prio-1 { background: var(--alarm-1); }
+.tb-alarm-count.prio-2 { background: var(--alarm-2); }
+.tb-alarm-count.prio-3 { background: var(--alarm-3); color: var(--ink); }
+
+.topbar button,
+.faceplate button,
+.alarm-bar button {
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid #8b949b;
+    border-radius: 4px;
+    color: var(--ink);
+    background: var(--paper);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.topbar button:hover:not(:disabled),
+.faceplate button:hover:not(:disabled) {
+    border-color: var(--ink);
+}
+
+.topbar button:disabled,
+.faceplate button:disabled,
+.faceplate input:disabled,
+.faceplate select:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.topbar select,
+.faceplate select,
+.faceplate input[type="number"] {
+    min-height: 28px;
+    padding: 3px 6px;
+    border: 1px solid #8b949b;
+    border-radius: 4px;
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    font-size: 12px;
+}
+
+.topbar .code-open {
+    margin-left: 0;
+}
+
+/* SINÓTICO */
+
+.synoptic {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+.synoptic-svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    user-select: none;
+}
+
+.synoptic-tooltip {
+    position: absolute;
+    pointer-events: none;
+    max-width: 320px;
+    padding: 6px 9px;
+    border-radius: 6px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--rule);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 0.15);
+    font-size: 12px;
+    z-index: 5;
+}
+
+/* Tubulação: traço externo escuro e miolo que mostra água ou repouso */
+.pipe-outer { fill: none; stroke: var(--ink); stroke-width: 5; stroke-linejoin: round; stroke-linecap: butt; }
+.pipe-inner { fill: none; stroke: var(--rule); stroke-width: 2.6; stroke-linejoin: round; }
+.pipe-inner.active { stroke: var(--water-pipe); stroke-dasharray: 10 6; animation: flow 1.2s linear infinite; }
+.pipe-inner.unknown { stroke: #c4c7cc; stroke-dasharray: 2 4; }
+
+@keyframes flow {
+    to { stroke-dashoffset: -16; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pipe-inner.active { animation: none; stroke-dasharray: none; }
+}
+
+.sig { fill: none; stroke: var(--sig); stroke-width: 1.4; stroke-dasharray: 7 4; }
+.conn { stroke: var(--ink); stroke-width: 1.2; }
+.sym { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
+.symi { fill: none; stroke: var(--sig); stroke-width: 1.4; }
+.ctlbox { fill: var(--paper); stroke: var(--sig); stroke-width: 1.4; }
+.stem { stroke: var(--ink); stroke-width: 1.4; }
+.vessel { fill: var(--paper); }
+.vessel-static { fill: var(--water); }
+.vessel-fill { fill: var(--water-fill); }
+.vessel-outline { fill: none; stroke: var(--ink); stroke-width: 1.6; }
+.sp-marker { stroke: var(--sig); stroke-width: 1.5; stroke-dasharray: 5 3; }
+.dot { fill: var(--ink); }
+.ah { fill: var(--ink); }
+.ahs { fill: var(--sig); }
+
+.tk { font: 700 17px system-ui, sans-serif; fill: var(--ink); text-anchor: middle; }
+.tank-value { font: 700 18px system-ui, sans-serif; fill: var(--ink); text-anchor: middle; font-variant-numeric: tabular-nums; }
+.tank-sub { font: 11px system-ui, sans-serif; fill: var(--muted); text-anchor: middle; }
+.lbl { font: 600 12.5px system-ui, sans-serif; fill: var(--ink); }
+.sub { font: 11px system-ui, sans-serif; fill: var(--muted); text-anchor: middle; }
+.value { font: 600 11px system-ui, sans-serif; fill: var(--ink); font-variant-numeric: tabular-nums; }
+.value.muted { fill: var(--muted); font-weight: 500; }
+.tagL { font: 700 10.5px ui-monospace, Consolas, monospace; fill: var(--ink); text-anchor: middle; }
+.tagN { font: 10.5px ui-monospace, Consolas, monospace; fill: var(--ink); text-anchor: middle; }
+.tagL.ctl, .tagN.ctl { fill: var(--sig); }
+.act { font: 700 9px system-ui, sans-serif; fill: var(--ink); text-anchor: middle; }
+.port { font: 700 10px ui-monospace, Consolas, monospace; fill: var(--muted); }
+.loop-text { font: 600 10px system-ui, sans-serif; fill: var(--ink); font-variant-numeric: tabular-nums; }
+.mode-box { fill: var(--paper); stroke: var(--sig); stroke-width: 1; }
+.mode-text { font: 700 9px system-ui, sans-serif; fill: var(--sig); }
+.comp-loop.man .mode-box { fill: var(--man-bg); stroke: var(--man); }
+.comp-loop.man .mode-text { fill: var(--man); }
+.comp-loop.bad .mode-box { fill: #f3e8ff; stroke: var(--bad); }
+.comp-loop.bad .mode-text { fill: var(--bad); }
+
+/* Equipamento em operação: preenchido; parado: branco */
+.comp-pump.running .pump-body { fill: var(--equip-on); }
+.comp-pump.running .pump-rotor { fill: var(--paper); }
+.comp-valve.closed .valve-body, .comp-hv.closed .valve-body { fill: var(--ink); }
+.xv-port.open { fill: var(--water-fill); }
+.no-data .bubble { fill: #efe6fb; stroke: var(--bad); }
+.no-data .value { fill: var(--bad); }
+
+.alarm-dot { stroke: var(--paper); stroke-width: 1.5; }
+.alarm-dot.prio-1 { fill: var(--alarm-1); }
+.alarm-dot.prio-2 { fill: var(--alarm-2); }
+.alarm-dot.prio-3 { fill: var(--alarm-3); }
+
+.comp { cursor: pointer; outline: none; }
+.comp:hover .sym, .comp:focus-visible .sym, .comp:hover .ctlbox, .comp:focus-visible .ctlbox, .comp:hover .vessel-outline {
+    stroke: var(--hi);
+    stroke-width: 2.2;
+}
+.comp.selected .sym, .comp.selected .ctlbox, .comp.selected .vessel-outline {
+    stroke: var(--hi);
+    stroke-width: 2.4;
+}
+.synoptic-svg.offline .value, .synoptic-svg.offline .tank-value, .synoptic-svg.offline .loop-text { fill: var(--muted); }
+
+/* FACEPLATE */
+
+.faceplate {
+    width: var(--faceplate-width);
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--panel);
+    border-left: 1px solid #c9ccd1;
+    padding: 12px 14px 20px;
+}
+
+.faceplate[hidden] { display: none; }
+
+.fp-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.fp-header h2 { margin: 0; font-size: 18px; }
+.fp-subtitle { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+.fp-meta { margin: 6px 0; color: var(--muted); font-size: 11.5px; }
+.fp-close { width: 30px; min-width: 30px; height: 30px; padding: 0; font-size: 18px; line-height: 1; }
+
+.fp-readonly, .fp-locked {
+    margin: 0 0 10px;
+    padding: 6px 8px;
+    border-left: 3px solid var(--hi);
+    background: color-mix(in srgb, var(--hi) 8%, transparent);
+    font-size: 12px;
+}
+.fp-readonly[hidden], .fp-locked[hidden] { display: none; }
+
+.fp-values {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.fp-value {
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+
+.fp-label { display: block; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.fp-big { font-size: 20px; font-variant-numeric: tabular-nums; }
+.fp-big.sp { color: var(--sig); }
+.fp-unit { margin-left: 4px; color: var(--muted); font-size: 11px; }
+
+.fp-bars { display: grid; gap: 6px; margin-bottom: 10px; }
+.fp-bar { position: relative; height: 12px; background: var(--paper); border: 1px solid #9aa0a6; border-radius: 3px; overflow: visible; }
+.fp-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--water-pipe); border-radius: 2px; transition: width 0.15s linear; }
+.fp-bar-fill.mv { background: var(--equip-on); }
+.fp-bar-mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--sig); }
+
+.fp-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+.fp-modes { margin-bottom: 10px; }
+.fp-mode { min-width: 70px; }
+.fp-mode.active { background: var(--sig); border-color: var(--sig); color: var(--paper); }
+.fp-mode.active:nth-child(2) { background: var(--man); border-color: var(--man); }
+.fp-quality { color: var(--muted); font-size: 11.5px; }
+.fp-quality.bad { color: var(--bad); font-weight: 600; }
+
+.fp-group { margin-bottom: 10px; }
+.fp-group > label { display: block; font-size: 11.5px; font-weight: 600; margin-bottom: 3px; }
+.fp-number { width: 86px; }
+.fp-step { min-width: 30px; padding: 4px 6px; }
+.fp-hint { color: var(--muted); font-size: 11px; margin: 2px 0; }
+.fp-range { width: 100%; accent-color: var(--sig); }
+.fp-apply { background: var(--sig); border-color: var(--sig); color: var(--paper); }
+.fp-apply:hover:not(:disabled) { background: #1d4f88; }
+.fp-select { width: 100%; }
+
+.fp-details { margin-top: 8px; border-top: 1px solid var(--rule); padding-top: 6px; }
+.fp-details summary { cursor: pointer; font-weight: 600; font-size: 12.5px; }
+.fp-tuning-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 8px; align-items: center; margin: 8px 0; }
+.fp-tuning-grid label { font-size: 11.5px; }
+.fp-tuning-grid input, .fp-tuning-grid select { width: 100%; }
+.fp-terms { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* BARRA DE ALARMES */
+
+.alarm-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px;
+    background: var(--panel);
+    border-top: 1px solid #c9ccd1;
+    font-size: 12px;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.alarm-bar .alarm-item { display: inline-flex; align-items: center; gap: 5px; }
+.alarm-badge {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--ink);
+}
+.alarm-badge.prio-1 { background: var(--alarm-1); border-radius: 0; }
+.alarm-badge.prio-2 { background: var(--alarm-2); clip-path: polygon(50% 0, 100% 100%, 0 100%); border: none; }
+.alarm-badge.prio-3 { background: var(--alarm-3); border-radius: 50%; }
+.alarm-bar .alarm-empty { color: var(--muted); }
+.alarm-bar .alarm-error { color: var(--alarm-1); font-weight: 600; }
+
+/* PAINÉIS HERDADOS (código e tendências) sobre a área principal */
+
+.main-area > .experiment-panel,
+.main-area > .code-panel {
+    z-index: 70;
+}
+
+@media (max-width: 1100px) {
+    :root { --faceplate-width: 300px; }
+    .tb-brand p { display: none; }
+}
+
+@media (max-width: 850px) {
+    .main-area { grid-template-columns: minmax(0, 1fr); }
+    .faceplate { position: absolute; right: 0; top: 0; bottom: 0; z-index: 60; box-shadow: -4px 0 16px rgb(0 0 0 / 0.15); }
+}

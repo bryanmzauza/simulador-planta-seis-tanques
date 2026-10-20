@@ -1,112 +1,141 @@
 # Planta Multivariável de Seis Tanques
 
-Simulador e interface supervisória para uma planta multivariável de seis tanques, desenvolvido em um projeto de Iniciação Científica da UFRGS.
+Supervisório (HMI) de uma planta multivariável de seis tanques, desenvolvido
+em um projeto de Iniciação Científica da UFRGS.
 
-A aplicação permite simular a planta no navegador, acompanhar níveis e vazões, realizar ensaios e registrar dados. Também possui uma estrutura para aquisição de dados da planta física através de Arduino, Python e WebSocket.
+A mesma página web opera:
+
+- a **planta simulada em Modelica**, em tempo real ou acelerado, com
+  controladores PID ISA / PI atuando em válvulas, bombas e níveis;
+- a **planta física**, com aquisição dos sensores pelo Arduino Mega 2560
+  (por enquanto somente leitura).
+
+A tela é o fluxograma de processo (P&ID) ao vivo. Clicar em um instrumento,
+válvula, bomba ou tanque abre o painel (faceplate) com setpoint, modo
+AUTO/MAN, saída manual e sintonia. Tendências e exportação em CSV ficam na
+gaveta inferior; o laboratório de código, na barra superior.
 
 ## Estrutura
 
 ```text
 src/
-  main.js                 inicialização e integração da aplicação
-  simulator.js            modelo e dinâmica da simulação
-  plant-model.js          parâmetros físicos da planta
-  plant-state.js          estado dos componentes
-  plant-view.js           representação da planta em JointJS
-  plant-config.js         posições e configuração visual
-  experiment-dashboard.js tendências, aquisição e exportação de dados
-  simulation-api.js       interface para execução de códigos na simulação
+  main.js                 coordenação da HMI
+  real.js                 cliente WebSocket do backend (fonte única de estado)
+  synoptic.js             fluxograma SVG ao vivo (geometria do P&ID)
+  faceplate.js            painéis de malha, bomba, válvula, tanque e sensores
+  topbar.js               modo, conexão, cenário, controle da simulação, alarmes
+  experiment-dashboard.js tendências, registro e exportação CSV
+  simulation-api.js       API do laboratório de código (ver SIMULATION_API.md)
+  component-labels.js     tags ISA e descrições (só apresentação)
+  hmi.css, style.css      estilos
 
 python/
-  server.py               servidor WebSocket
-  serial_bridge.py        comunicação serial com o Arduino
-  hardware_config.py      configuração e calibração da aquisição
+  server.py               servidor WebSocket (modos MODELICA, MOCK e HARDWARE)
+  modelica_runtime.py     laço de tempo real: planta + controladores + cenários
+  modelica_plant.py       FMU da planta (SeisTanques_v13) via PyFMI
+  controle.py             banco de controladores PID_ISA/PI (FMU) via PyFMI
+  cenarios.py             cenários de controle (malhas, pareamentos, sintonias)
+  build_fmu.py            exporta as FMUs com o OpenModelica
+  serial_bridge.py        comunicação serial com o Arduino (aquisição)
+  hardware_config.py      calibração da aquisição
 
-arduino/
-  six_tank_mega2560/      firmware da planta
+modelica/
+  modelo_6tanques_v13.mo       modelo físico da bancada (P&ID)
+  modelo_6tanques_controle.mo  controladores PID_ISA/PI para tempo real
+  modelo_6tanques_v12.mo       modelo original do laboratório (com MF_ST)
+  pid_modelo_6tanques_v1.html  P&ID da planta
+  build/                       FMUs geradas (não versionadas)
 
-index.html                página principal
-SIMULATION_API.md         documentação da API de simulação
+arduino/six_tank_mega2560/     firmware de aquisição
 ```
+
+## Requisitos
+
+- Node.js e npm (interface).
+- OpenModelica 1.27 ou superior (só para gerar as FMUs).
+- Python com PyFMI para o modo Modelica. PyFMI não instala por `pip` no
+  Windows; use o conda-forge (Miniforge):
+
+```sh
+conda create -n seistanques -c conda-forge python=3.12 pyfmi websockets pyserial pyzmq
+conda run -n seistanques pip install OMPython
+```
+
+Para a planta física basta `python -m pip install -r python/requirements.txt`.
 
 ## Como usar
 
-Requer Node.js e npm.
+### Simulação Modelica
 
-Na pasta do projeto:
+```text
+rodar_planta_modelica.bat
+```
 
-```sh
-npm install
+O script localiza o ambiente `seistanques`, gera as FMUs na primeira vez
+(`python/build_fmu.py`), inicia o backend em modo `MODELICA` e o Vite, e abre
+`http://127.0.0.1:5173`. A HMI conecta sozinha.
+
+Na barra superior: escolha o **cenário**, clique em **Rodar** e ajuste a
+**velocidade** (0,25× a 10×). As malhas começam em MAN; no faceplate de cada
+controlador passe para AUTO e ajuste o SP.
+
+Cenários:
+
+| Cenário | Malhas |
+|---|---|
+| Nível | LIC-101: LT-101 → LV-103 · LIC-102: LT-102 → LV-104 · LIC-103: LT-103 → LV-101 · LIC-104: LT-104 → LV-102 |
+| Vazão por válvula | FIC-101: FT-101 → LV-101 · FIC-102: FT-102 → LV-102 · FIC-105: FT-105 → LV-103 · FIC-106: FT-106 → LV-104 |
+| Vazão por bomba | FIC-103: FT-101 + FT-102 → B-103 · FIC-105: FT-105 → B-101 · FIC-106: FT-106 → B-102 |
+
+Os pareamentos e as sintonias iniciais estão em `python/cenarios.py`.
+
+Manualmente (PowerShell):
+
+```powershell
+$env:SIX_TANK_MODE = "MODELICA"
+conda run -n seistanques python python\server.py
 npm run dev
 ```
 
-Depois, abra:
-
-```text
-http://127.0.0.1:5173
-```
-
-A simulação funciona sem Python ou Arduino.
-
-No Windows, também pode ser iniciada por:
-
-```text
-rodar_simulacao.bat
-```
-
-## Simulação
-
-O modelo hidráulico é executado em JavaScript no navegador.
-
-A interface permite ajustar bombas, válvulas e relés, acompanhar os níveis dos tanques e as vazões do sistema e visualizar tendências ao longo do tempo.
-
-O painel **Código / API** permite executar códigos durante a simulação para realizar ensaios e alterar os atuadores programaticamente. A documentação está em `SIMULATION_API.md`.
-
-Alguns parâmetros do modelo ainda são provisórios e serão ajustados a partir de medições e calibração da planta física.
-
-## Planta física
-
-A aquisição da planta utiliza um Arduino Mega 2560 conectado ao computador por USB/Serial.
-
-O backend Python recebe os dados do Arduino e os envia para a interface através de WebSocket.
-
-Para instalar as dependências:
-
-```sh
-python -m pip install -r python/requirements.txt
-```
-
-Para executar com dados simulados pelo backend:
-
-```text
-rodar_planta_mock.bat
-```
-
-Para utilizar a bancada:
+### Planta física
 
 ```text
 rodar_planta_hardware.bat
 ```
 
-A configuração dos sensores, calibração e conexões está descrita em:
+Detecta a porta do Mega, inicia o backend em modo `HARDWARE` e a interface.
+Nesse modo a HMI é somente leitura: nenhum comando é enviado ao Arduino.
+Dado ausente aparece como `—` (nunca como zero).
 
-- `arduino/README.md`
-- `arduino/six_tank_mega2560/CONEXOES_PLANTA_1.md`
+### Backend simulado simples (sem Modelica)
 
-## Interface
+```text
+rodar_planta_mock.bat
+```
 
-A interface possui:
+## Modelos Modelica
 
-- sinótico da planta;
-- modos Simulação e Planta real;
-- níveis e vazões;
-- tendências temporais;
-- registro de experimentos;
-- exportação de dados em CSV;
-- painel para execução de códigos sobre a simulação.
+- `modelo_6tanques_v13.mo`: planta física com as tags do P&ID (tanques em
+  garrafas PET invertidas, descargas por orifício, válvulas de 3 vias
+  temporizadas, sensores YF-S401 e MPX5010). Os parâmetros hidráulicos são
+  estimativas a confirmar com medições na bancada (ver cabeçalho do arquivo).
+- `modelo_6tanques_controle.mo`: PID ISA da v12 com sintonia, modo
+  (AUTO/MAN) e ação como entradas, em um banco de N controladores. PI é o
+  mesmo bloco com Td = 0. A transferência MAN→AUTO é sem salto.
 
-O desenho da planta é feito com JointJS.
+As duas FMUs (FMI 2.0, co-simulação) são geradas por
+`python/build_fmu.py` e executadas pelo backend com PyFMI, com passo de
+0,1 s sincronizado ao relógio.
+
+## Testes
+
+```sh
+npm run build
+conda run -n seistanques python -m unittest discover -s python -p "test_*.py"
+```
 
 ## Observações
 
-Os parâmetros hidráulicos, dimensões e fatores de calibração ainda estão em desenvolvimento. Os resultados da simulação não devem ser interpretados como uma reprodução já identificada experimentalmente da bancada.
+Os parâmetros hidráulicos, dimensões e fatores de calibração ainda estão em
+desenvolvimento. Os resultados da simulação não devem ser interpretados como
+uma reprodução já identificada experimentalmente da bancada.

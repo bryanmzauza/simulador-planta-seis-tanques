@@ -1,1545 +1,566 @@
-import {
-    createPlantState,
-    getTank,
-    getPump,
-    getActuatedValve,
-    getRecycleValve,
-    getManualValve,
-    getThreeWayValve,
-    getFlowSensor,
-    getLevelSensor
-} from './plant-state.js';
+// CLIENTE DO BACKEND (WEBSOCKET)
+/* Única fonte de estado da HMI. O backend Python (python/server.py) publica
+   o estado da planta a cada 100 ms, venha ele da FMU Modelica (modo
+   MODELICA), do mock (MOCK) ou da bancada (HARDWARE).
 
-// PLANTA REAL
-/* Responsabilidades:
-   - manter o estado da planta física
-   - receber leituras do hardware
-   - armazenar estados de bombas e válvulas
-   - preparar comandos futuros para o Arduino/backend
-   Não possui:
-   - JointJS
-   - DOM
-   - modelo matemático da planta
- */
+   Regras:
+   - dado ausente não é zero: campo faltando/inválido vira null e a HMI
+     mostra "—"; após desconexão tudo é invalidado;
+   - no modo HARDWARE a HMI é somente leitura: nenhum comando é enviado;
+   - os IDs internos (H1, P1, V1, X1A, LT1, FT1...) não são traduzidos aqui. */
 
-// ESTADO DA PLANTA REAL
+import { createPlantState } from './plant-state.js';
 
-export const realPlant =
-    createPlantState();
-for (const sensor of realPlant.flowSensors) sensor.flow = null;
-for (const sensor of realPlant.levelSensors) {
-    for (const key of ['level', 'pressure', 'voltage', 'raw']) sensor[key] = null;
+// ESTADO
+
+export const realPlant = createPlantState();
+
+for (const sensor of realPlant.flowSensors) {
+    sensor.flow = null;
+    sensor.raw = null;
+    sensor.status = 'unavailable';
 }
-for (const tank of realPlant.tanks) tank.level = tank.height = tank.volume = null;
 
+for (const sensor of realPlant.levelSensors) {
+    sensor.level = null;
+    sensor.heightCm = null;
+    sensor.pressure = null;
+    sensor.voltage = null;
+    sensor.raw = null;
+    sensor.status = 'unavailable';
+}
 
-// ESTADO DA CONEXÃO
+for (const tank of realPlant.tanks) {
+    tank.level = null;
+    tank.height = null;
+    tank.heightCm = null;
+    tank.volume = null;
+}
+
+for (const valve of realPlant.threeWayValves) {
+    valve.state = false;
+}
 
 export const realRuntime = {
+    connected: false,
+    connecting: false,
+    connectionLabel: 'Desconectado',
+    transport: 'WebSocket',
+    port: '8765',
+    url: 'ws://localhost:8765',
+    lastUpdate: null,
+    lastError: null,
 
-    connected:
-        false,
+    // Modo informado pelo backend: 'MODELICA' | 'MOCK' | 'HARDWARE' | null
+    backendMode: null,
 
-    connecting:
-        false,
+    // Relógio e controle da simulação (modo MODELICA)
+    sim: {
+        t: 0,
+        running: false,
+        speed: 1,
+        realtimeRatio: 1,
+        cpuMs: 0,
+        initialLevels: {},
+        tankHeightCm: 25,
+        error: null
+    },
 
-    connectionLabel:
-        'Desconectado',
+    scenario: null,
+    scenarios: [],
+    loops: {},
+    xv: {},
+    alarms: [],
 
-    transport:
-        null,
-
-    port:
-        null,
-
-    lastUpdate:
-        null,
-
-    lastError:
-        null,
-
-    flows:
-        {}
+    // Vazões por trecho do P&ID (L/min) e no formato antigo por segmento
+    segments: {},
+    flows: {}
 };
 
-// WEBSOCKET
-/* Navegador (HMI) <-> servidor Python
-   O Python será criado na próxima etapa. Por enquanto o
-   endereço padrão é local, na porta 8765.
- */
+const TANK_IDS = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'];
 
-const DEFAULT_WEBSOCKET_URL =
-    'ws://localhost:8765';
+// Trecho do P&ID <- segmento do formato antigo (MOCK/HARDWARE)
+const LEGACY_SEGMENTS = {
+    B103: 'RES_P3',
+    LV101: 'MV_V1',
+    LV102: 'MV_V2',
+    XV101A: 'V1_X1A',
+    XV101B: 'V1_X1B',
+    XV102A: 'V2_X2A',
+    XV102B: 'V2_X2B',
+    HV105: 'H5_HV3_IN',
+    HV106: 'H6_HV4_IN',
+    B101: 'H3_HV3_P1',
+    B102: 'H4_HV4_P2',
+    LV103: 'P1_V3',
+    LV104: 'P2_V4',
+    HV107: 'P1_RV1',
+    HV108: 'P2_RV2',
+    HV101: 'H1_HV1_DRAIN',
+    HV102: 'H2_HV2_DRAIN'
+};
 
-let realSocket =
-    null;
+let socket = null;
+let intentionalClose = false;
+let reconnectTimer = null;
+let autoReconnect = true;
+const listeners = new Set();
 
-let intentionalDisconnect =
-    false;
+// AUXILIARES
 
-// AUXILIAR
-
-function clamp(
-    value,
-    min,
-    max
-) {
-
-    return Math.max(
-        min,
-        Math.min(
-            max,
-            value
-        )
-    );
+function finite(value) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-// ENVIO DE COMANDOS AO SERVIDOR PYTHON
+function clamp01(value) {
+    return Math.max(0, Math.min(1, value));
+}
 
-function sendRealCommand() { return false; }
+function byId(collection, id) {
+    return collection.find(item => item.id === id) ?? null;
+}
 
+export function isWritable() {
+    return realRuntime.connected && realRuntime.backendMode !== 'HARDWARE' && realRuntime.backendMode !== null;
+}
 
-// RECEBIMENTO DE MENSAGENS DO SERVIDOR PYTHON
-//
-// Formato principal:
-//
-// {
-//     type: 'state',
-//     data: {
-//         tanks: {...},
-//         levelSensors: {...},
-//         flowSensors: {...},
-//         pumps: {...},
-//         mainValve: {...},
-//         actuatedValves: {...},
-//         threeWayValves: {...}
-//     }
-// }
-//
-// O objeto "data" usa exatamente o formato que applyRealData()
-// já aceitava antes da implementação do WebSocket.
+export function isModelica() {
+    return realRuntime.backendMode === 'MODELICA';
+}
 
-function handleRealWebSocketMessage(
-    rawMessage
-) {
+export function onRealUpdate(listener) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+}
 
-    let message;
-
-    try {
-
-        message =
-            JSON.parse(
-                rawMessage
-            );
-
-    } catch (error) {
-
-        console.warn(
-            '[REAL] Mensagem JSON inválida recebida:',
-            rawMessage
-        );
-
-        return;
-    }
-
-    if (
-        !message ||
-        typeof message !==
-            'object'
-    ) {
-
-        return;
-    }
-
-    if (
-        message.type ===
-        'state'
-    ) {
-
-        const data =
-            message.data &&
-            typeof message.data ===
-                'object'
-                ? message.data
-                : message;
-
-        applyRealData(
-            data
-        );
-
-        /* Se o backend não fornecer vazão de cada trecho,
-           construímos o mapa visual a partir dos seis FT.
-         */
-        if (
-            !data.flows ||
-            typeof data.flows !==
-                'object'
-        ) {
-
-            updateRealVisualFlows();
+function notify() {
+    for (const listener of listeners) {
+        try {
+            listener();
+        } catch (error) {
+            console.error('[REAL] listener', error);
         }
-
-        return;
-    }
-
-    if (
-        message.type ===
-        'hello'
-    ) {
-
-        console.log(
-            '[REAL] Servidor Python conectado:',
-            message
-        );
-
-        return;
-    }
-
-    if (
-        message.type ===
-        'error'
-    ) {
-
-        realRuntime.lastError =
-            message.message ??
-            'Erro informado pelo servidor Python.';
-
-        console.error(
-            '[REAL]',
-            realRuntime.lastError
-        );
-
-        return;
-    }
-
-    console.warn(
-        '[REAL] Tipo de mensagem desconhecido:',
-        message.type
-    );
-}
-
-// CONEXÃO
-
-export function setRealConnectionState(
-    connected,
-    options = {}
-) {
-    if (!connected) {
-        for (const sensor of realPlant.flowSensors) sensor.flow = null;
-        for (const sensor of realPlant.levelSensors) {
-            for (const key of ['level', 'pressure', 'voltage', 'raw']) sensor[key] = null;
-        }
-        for (const tank of realPlant.tanks) tank.level = tank.height = tank.volume = null;
-        realRuntime.flows = {};
-    }
-
-    realRuntime.connected =
-        Boolean(
-            connected
-        );
-
-    realRuntime.connecting =
-        false;
-
-    if (
-        options.transport !==
-        undefined
-    ) {
-
-        realRuntime.transport =
-            options.transport;
-    }
-
-    if (
-        options.port !==
-        undefined
-    ) {
-
-        realRuntime.port =
-            options.port;
-    }
-
-    if (
-        options.label !==
-        undefined
-    ) {
-
-        realRuntime.connectionLabel =
-            options.label;
-
-    } else {
-
-        realRuntime.connectionLabel =
-            realRuntime.connected
-                ? 'Conectado'
-                : 'Desconectado';
     }
 }
 
-export function setRealConnecting(
-    connecting
-) {
+// INVALIDAÇÃO
+/* Chamada em cada quadro antes de aplicar os dados e na desconexão:
+   nada do quadro anterior sobrevive. */
 
-    realRuntime.connecting =
-        Boolean(
-            connecting
-        );
-
-    if (
-        realRuntime.connecting
-    ) {
-
-        realRuntime.connectionLabel =
-            'Conectando...';
-    }
-}
-
-export function setRealConnectionError(
-    error
-) {
-
-    realRuntime.connected =
-        false;
-
-    realRuntime.connecting =
-        false;
-
-    realRuntime.lastError =
-        error;
-
-    realRuntime.connectionLabel =
-        'Erro de conexão';
-}
-
-// RECEBIMENTO DE DADOS REAIS
-/* Futuramente poderá receber algo como:
-   {
-       tanks: {
-           H1: {
-               height: 0.24,
-               volume: 0.61
-           }
-       },
-       levelSensors: {
-           LT1: {
-               level: 42.7,
-               pressure: 2.35,
-               voltage: 1.31,
-               raw: 268
-           }
-       },
-       flowSensors: {
-           FT1: {
-               flow: 1.84
-           }
-       },
-       manualValves: {
-           HV3_IN: {
-               opening: 1
-           }
-       }
-   }
- */
-
-export function applyRealData(
-    data
-) {
-    // Frames completos: ausência explícita ou omissão elimina amostras antigas.
+function clearMeasurements() {
     for (const sensor of realPlant.flowSensors) {
-        const incoming = data?.flowSensors?.[sensor.id];
-        sensor.flow = Number.isFinite(incoming?.flow) ? incoming.flow : null;
-        sensor.raw = incoming?.raw ?? null;
-        sensor.status = incoming?.status ?? 'unavailable';
+        sensor.flow = null;
+        sensor.raw = null;
+        sensor.status = 'unavailable';
     }
     for (const sensor of realPlant.levelSensors) {
-        const incoming = data?.levelSensors?.[sensor.id];
-        for (const key of ['level', 'pressure', 'voltage', 'raw']) sensor[key] = Number.isFinite(incoming?.[key]) ? incoming[key] : null;
+        sensor.level = null;
+        sensor.heightCm = null;
+        sensor.pressure = null;
+        sensor.voltage = null;
+        sensor.raw = null;
+        sensor.status = 'unavailable';
     }
     for (const tank of realPlant.tanks) {
-        for (const key of ['level', 'height', 'volume']) tank[key] = Number.isFinite(data?.tanks?.[tank.id]?.[key]) ? data.tanks[tank.id][key] : null;
+        tank.level = null;
+        tank.height = null;
+        tank.heightCm = null;
+        tank.volume = null;
     }
+}
 
-    if (
-        !data ||
-        typeof data !==
-            'object'
-    ) {
+// APLICAÇÃO DO ESTADO
 
+export function applyRealData(data) {
+    clearMeasurements();
+
+    if (!data || typeof data !== 'object') {
         return false;
     }
 
     // TANQUES
-
-    if (
-        data.tanks &&
-        typeof data.tanks ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.tanks
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const tank =
-                    getTank(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !tank ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    Number.isFinite(
-                        values.height
-                    )
-                ) {
-
-                    tank.height =
-                        Math.max(
-                            0,
-                            values.height
-                        );
-                }
-
-                if (
-                    Number.isFinite(
-                        values.volume
-                    )
-                ) {
-
-                    tank.volume =
-                        Math.max(
-                            0,
-                            values.volume
-                        );
-                }
-
-                if (
-                    Number.isFinite(
-                        values.level
-                    )
-                ) {
-
-                    tank.level =
-                        clamp(
-                            values.level,
-                            0,
-                            100
-                        );
-                }
-            }
-        );
+    if (data.tanks && typeof data.tanks === 'object') {
+        for (const tank of realPlant.tanks) {
+            const source = data.tanks[tank.id];
+            if (!source || typeof source !== 'object') continue;
+            const level = finite(source.level);
+            tank.level = level === null ? null : Math.max(0, Math.min(100, level));
+            const height = finite(source.height);
+            tank.height = height === null ? null : Math.max(0, height);
+            const heightCm = finite(source.heightCm);
+            tank.heightCm = heightCm === null ? null : Math.max(0, heightCm);
+            const volume = finite(source.volume);
+            tank.volume = volume === null ? null : Math.max(0, volume);
+        }
     }
 
     // SENSORES DE NÍVEL
+    if (data.levelSensors && typeof data.levelSensors === 'object') {
+        for (const sensor of realPlant.levelSensors) {
+            const source = data.levelSensors[sensor.id];
+            if (!source || typeof source !== 'object') continue;
+            const level = finite(source.level);
+            sensor.level = level === null ? null : Math.max(0, Math.min(100, level));
+            sensor.heightCm = finite(source.heightCm);
+            const pressure = finite(source.pressure);
+            sensor.pressure = pressure === null ? null : Math.max(0, pressure);
+            sensor.voltage = finite(source.voltage);
+            sensor.raw = source.raw ?? null;
+            sensor.status = source.status ?? (sensor.level === null ? 'unavailable' : 'available');
 
-    if (
-        data.levelSensors &&
-        typeof data.levelSensors ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.levelSensors
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const sensor =
-                    getLevelSensor(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !sensor ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    Number.isFinite(
-                        values.level
-                    )
-                ) {
-
-                    sensor.level =
-                        clamp(
-                            values.level,
-                            0,
-                            100
-                        );
-                }
-
-                if (
-                    Number.isFinite(
-                        values.pressure
-                    )
-                ) {
-
-                    sensor.pressure =
-                        Math.max(
-                            0,
-                            values.pressure
-                        );
-                }
-
-                if (
-                    Number.isFinite(
-                        values.voltage
-                    )
-                ) {
-
-                    sensor.voltage =
-                        values.voltage;
-                }
-
-                if (
-                    values.raw !==
-                    undefined
-                ) {
-
-                    sensor.raw =
-                        values.raw;
-                }
-
-                // Atualiza também o tanque correspondente.
-
-                const tank =
-                    getTank(
-                        realPlant,
-                        sensor.tank
-                    );
-
-                if (
-                    tank &&
-                    Number.isFinite(
-                        values.level
-                    )
-                ) {
-
-                    tank.level =
-                        clamp(
-                            values.level,
-                            0,
-                            100
-                        );
-                }
-
-                if (
-                    tank &&
-                    Number.isFinite(
-                        values.height
-                    )
-                ) {
-
-                    tank.height =
-                        Math.max(
-                            0,
-                            values.height
-                        );
-                }
-
-                if (
-                    tank &&
-                    Number.isFinite(
-                        values.volume
-                    )
-                ) {
-
-                    tank.volume =
-                        Math.max(
-                            0,
-                            values.volume
-                        );
-                }
+            const tank = byId(realPlant.tanks, sensor.tank);
+            if (tank && sensor.level !== null) {
+                tank.level = sensor.level;
+                if (tank.heightCm === null && sensor.heightCm !== null) tank.heightCm = sensor.heightCm;
             }
-        );
+        }
     }
 
     // SENSORES DE VAZÃO
-
-    if (
-        data.flowSensors &&
-        typeof data.flowSensors ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.flowSensors
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const sensor =
-                    getFlowSensor(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !sensor ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    Number.isFinite(
-                        values.flow
-                    )
-                ) {
-
-                    sensor.flow =
-                        Math.max(
-                            0,
-                            values.flow
-                        );
-                }
-            }
-        );
+    if (data.flowSensors && typeof data.flowSensors === 'object') {
+        for (const sensor of realPlant.flowSensors) {
+            const source = data.flowSensors[sensor.id];
+            if (!source || typeof source !== 'object') continue;
+            const flow = finite(source.flow);
+            sensor.flow = flow === null ? null : Math.max(0, flow);
+            sensor.raw = source.raw ?? null;
+            sensor.status = source.status ?? (sensor.flow === null ? 'unavailable' : 'available');
+        }
     }
 
     // BOMBAS
-
-    if (
-        data.pumps &&
-        typeof data.pumps ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.pumps
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const pump =
-                    getPump(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !pump ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    values.power !==
-                    undefined
-                ) {
-
-                    pump.power =
-                        values.power
-                            ? 1
-                            : 0;
-                }
-
-                if (
-                    Number.isFinite(
-                        values.command
-                    )
-                ) {
-
-                    pump.command =
-                        clamp(
-                            values.command,
-                            0,
-                            1
-                        );
-                }
-            }
-        );
-    }
-
-    // MV
-
-    if (
-        data.mainValve &&
-        typeof data.mainValve ===
-            'object'
-    ) {
-
-        if (
-            Number.isFinite(
-                data.mainValve.opening
-            )
-        ) {
-
-            realPlant
-                .mainValve
-                .opening =
-                clamp(
-                    data.mainValve.opening,
-                    0,
-                    1
-                );
+    if (data.pumps && typeof data.pumps === 'object') {
+        for (const pump of realPlant.pumps) {
+            const source = data.pumps[pump.id];
+            if (!source || typeof source !== 'object') continue;
+            if ('power' in source) pump.power = source.power ? 1 : 0;
+            const command = finite(source.command);
+            if (command !== null) pump.command = clamp01(command);
         }
     }
 
-    // V1 - V4
-
-    if (
-        data.actuatedValves &&
-        typeof data.actuatedValves ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.actuatedValves
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const valve =
-                    getActuatedValve(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !valve ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    Number.isFinite(
-                        values.opening
-                    )
-                ) {
-
-                    valve.opening =
-                        clamp(
-                            values.opening,
-                            0,
-                            1
-                        );
-                }
-            }
-        );
+    // VÁLVULAS
+    if (data.mainValve && typeof data.mainValve === 'object') {
+        const opening = finite(data.mainValve.opening);
+        if (opening !== null) realPlant.mainValve.opening = clamp01(opening);
     }
 
-    // RV1 / RV2
-    /* Válvulas manuais específicas da recirculação.
-     */
+    const valveGroups = [
+        ['actuatedValves', realPlant.actuatedValves],
+        ['recycleValves', realPlant.recycleValves],
+        ['manualValves', realPlant.manualValves]
+    ];
 
-    if (
-        data.recycleValves &&
-        typeof data.recycleValves ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.recycleValves
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const valve =
-                    getRecycleValve(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !valve ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    Number.isFinite(
-                        values.opening
-                    )
-                ) {
-
-                    valve.opening =
-                        clamp(
-                            values.opening,
-                            0,
-                            1
-                        );
-                }
-            }
-        );
+    for (const [key, collection] of valveGroups) {
+        const group = data[key];
+        if (!group || typeof group !== 'object') continue;
+        for (const valve of collection) {
+            const source = group[valve.id];
+            if (!source || typeof source !== 'object') continue;
+            const opening = finite(source.opening);
+            if (opening !== null) valve.opening = clamp01(opening);
+        }
     }
 
-    // DEMAIS VÁLVULAS MANUAIS
-    /* HV3_IN
-       HV4_IN
-       HV3_P1
-       HV4_P2
-       HV1_DRAIN
-       HV2_DRAIN
-       Como são manuais, esses valores podem futuramente ser
-       informados pelo operador ou carregados de uma
-       configuração da bancada.
-     */
-
-    if (
-        data.manualValves &&
-        typeof data.manualValves ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.manualValves
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const valve =
-                    getManualValve(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !valve ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    Number.isFinite(
-                        values.opening
-                    )
-                ) {
-
-                    valve.opening =
-                        clamp(
-                            values.opening,
-                            0,
-                            1
-                        );
-                }
-            }
-        );
+    if (data.threeWayValves && typeof data.threeWayValves === 'object') {
+        for (const valve of realPlant.threeWayValves) {
+            const source = data.threeWayValves[valve.id];
+            if (!source || typeof source !== 'object') continue;
+            valve.state = Boolean(source.state);
+        }
     }
 
-    // X1A / X1B / X2A / X2B
+    // MODO E SIMULAÇÃO
+    realRuntime.backendMode = typeof data.mode === 'string' ? data.mode : realRuntime.backendMode ?? 'MOCK';
 
-    if (
-        data.threeWayValves &&
-        typeof data.threeWayValves ===
-            'object'
-    ) {
-
-        Object.entries(
-            data.threeWayValves
-        ).forEach(
-            (
-                [
-                    id,
-                    values
-                ]
-            ) => {
-
-                const valve =
-                    getThreeWayValve(
-                        realPlant,
-                        id
-                    );
-
-                if (
-                    !valve ||
-                    !values
-                ) {
-
-                    return;
-                }
-
-                if (
-                    values.state !==
-                    undefined
-                ) {
-
-                    valve.state =
-                        Boolean(
-                            values.state
-                        );
-                }
-            }
-        );
+    if (data.sim && typeof data.sim === 'object') {
+        realRuntime.sim = {
+            t: finite(data.sim.t) ?? 0,
+            running: Boolean(data.sim.running),
+            speed: finite(data.sim.speed) ?? 1,
+            realtimeRatio: finite(data.sim.realtimeRatio) ?? 1,
+            cpuMs: finite(data.sim.cpuMs) ?? 0,
+            initialLevels: data.sim.initialLevels && typeof data.sim.initialLevels === 'object' ? { ...data.sim.initialLevels } : {},
+            tankHeightCm: finite(data.sim.tankHeightCm) ?? 25,
+            error: typeof data.sim.error === 'string' ? data.sim.error : null
+        };
+    } else {
+        realRuntime.sim = { ...realRuntime.sim, running: false, error: null };
     }
 
-    // VAZÕES VISUAIS
-    /* Se futuramente o backend fornecer vazão calculada para
-       cada trecho, aceitamos diretamente aqui.
-     */
+    realRuntime.scenario = typeof data.scenario === 'string' ? data.scenario : null;
+    realRuntime.scenarios = Array.isArray(data.scenarios) ? data.scenarios : [];
+    realRuntime.loops = data.loops && typeof data.loops === 'object' ? data.loops : {};
+    realRuntime.xv = data.xv && typeof data.xv === 'object' ? data.xv : {};
+    realRuntime.alarms = Array.isArray(data.alarms) ? data.alarms : [];
 
-    if (
-        data.flows &&
-        typeof data.flows ===
-            'object'
-    ) {
-
-        realRuntime.flows =
-            {
-                ...realRuntime.flows,
-                ...data.flows
-            };
+    // VAZÕES POR TRECHO
+    if (data.segments && typeof data.segments === 'object') {
+        realRuntime.segments = data.segments;
+    } else if (data.flows && typeof data.flows === 'object') {
+        const segments = {};
+        for (const [segment, legacy] of Object.entries(LEGACY_SEGMENTS)) {
+            segments[segment] = finite(data.flows[legacy]);
+        }
+        realRuntime.segments = segments;
+    } else {
+        realRuntime.segments = deriveSegmentsFromSensors();
     }
+    realRuntime.flows = data.flows && typeof data.flows === 'object' ? data.flows : {};
 
-    // STATUS
-
-    realRuntime.lastUpdate =
-        Date.now();
-
-    realRuntime.lastError =
-        null;
-
+    realRuntime.lastUpdate = Date.now();
+    realRuntime.lastError = null;
     return true;
 }
 
-// COMANDOS DAS BOMBAS
-
-export function toggleRealPump(
-    id
-) {
-    return false; // Aquisição somente leitura.
-}
-
-export function setRealPumpPower(
-    id,
-    power
-) {
-    return false; // Aquisição somente leitura.
-}
-
-export function setRealPumpCommand(
-    id,
-    command
-) {
-    return false; // Aquisição somente leitura.
-}
-
-// MV
-
-export function setRealMainValveOpening(
-    opening
-) {
-    return false; // Aquisição somente leitura.
-}
-
-// V1 - V4
-
-export function setRealActuatedValveOpening(
-    id,
-    opening
-) {
-    return false; // Aquisição somente leitura.
-}
-
-// RV1 / RV2
-/* São válvulas manuais.
-   Esta função serve apenas para registrar no software a
-   posição informada pelo operador.
- */
-
-export function setRealRecycleValveOpening(
-    id,
-    opening
-) {
-    return false; // Aquisição somente leitura.
-}
-
-// NOVAS VÁLVULAS MANUAIS
-/* Também não enviamos nenhum comando ao hardware.
-   Esta função apenas registra a posição conhecida da válvula.
- */
-
-export function setRealManualValveOpening(
-    id,
-    opening
-) {
-    return false; // Aquisição somente leitura.
-}
-
-// X1A / X1B / X2A / X2B
-
-export function toggleRealThreeWayValve(
-    id
-) {
-    return false; // Aquisição somente leitura.
-}
-
-export function setRealThreeWayValveState(
-    id,
-    state
-) {
-    return false; // Aquisição somente leitura.
-}
-
-// VAZÕES VISUAIS NO MODO REAL
-/* Temos atualmente seis sensores FT:
-   FT1 -> X2A -> H5
-   FT2 -> X1B -> H6
-   FT3 -> X1A -> H3
-   FT4 -> V3  -> H1
-   FT5 -> V4  -> H2
-   FT6 -> X2B -> H4
-   Portanto algumas vazões são conhecidas diretamente.
-   Outras NÃO possuem sensor dedicado:
-   H5 -> H3
-   retorno RV1
-   H6 -> H4
-   retorno RV2
-   H3 -> P1
-   H4 -> P2
-   H1 -> reservatório
-   H2 -> reservatório
-   Não vamos inventar valores para essas linhas.
- */
-
-export function updateRealVisualFlows() {
-
-    const FT1 =
-        getFlowSensor(
-            realPlant,
-            'FT1'
-        )?.flow ??
-        0;
-
-    const FT2 =
-        getFlowSensor(
-            realPlant,
-            'FT2'
-        )?.flow ??
-        0;
-
-    const FT3 =
-        getFlowSensor(
-            realPlant,
-            'FT3'
-        )?.flow ??
-        0;
-
-    const FT4 =
-        getFlowSensor(
-            realPlant,
-            'FT4'
-        )?.flow ??
-        0;
-
-    const FT5 =
-        getFlowSensor(
-            realPlant,
-            'FT5'
-        )?.flow ??
-        0;
-
-    const FT6 =
-        getFlowSensor(
-            realPlant,
-            'FT6'
-        )?.flow ??
-        0;
-
-    // RAMO CENTRAL
-    /* Como temos FT1, FT2, FT3 e FT6 após a divisão, podemos
-       inferir a vazão total do ramo central pela soma.
-     */
-
-    const branchX1 =
-        FT2 +
-        FT3;
-
-    const branchX2 =
-        FT1 +
-        FT6;
-
-    const centralFlow =
-        branchX1 +
-        branchX2;
-
-    // MAPA VISUAL
-
-    realRuntime.flows =
-        {
-
-            // P3 / RAMO CENTRAL
-
-            RES_P3:
-                centralFlow,
-
-            P3_MV:
-                centralFlow,
-
-            MV_V1:
-                branchX1,
-
-            MV_V2:
-                branchX2,
-
-            // X1A -> FT3 -> H3
-
-            V1_X1A:
-                FT3,
-
-            X1A_FT3:
-                FT3,
-
-            FT3_H3:
-                FT3,
-
-            // X1B -> FT2 -> H6
-
-            V1_X1B:
-                FT2,
-
-            X1B_FT2:
-                FT2,
-
-            FT2_H6:
-                FT2,
-
-            // X2A -> FT1 -> H5
-
-            V2_X2A:
-                FT1,
-
-            X2A_FT1:
-                FT1,
-
-            FT1_H5:
-                FT1,
-
-            // X2B -> FT6 -> H4
-
-            V2_X2B:
-                FT6,
-
-            X2B_FT6:
-                FT6,
-
-            FT6_H4:
-                FT6,
-
-            // P1 -> V3 -> FT4 -> H1
-            /* FT4 confirma apenas este ramo.
-             */
-
-            P1_V3:
-                FT4,
-
-            V3_FT4:
-                FT4,
-
-            FT4_H1:
-                FT4,
-
-            // P2 -> V4 -> FT5 -> H2
-
-            P2_V4:
-                FT5,
-
-            V4_FT5:
-                FT5,
-
-            FT5_H2:
-                FT5,
-
-            // TRECHOS NÃO MEDIDOS DIRETAMENTE
-            /* Deixamos 0 até termos informação suficiente.
-             */
-
-            H5_HV3_IN:
-                0,
-
-            HV3_IN_H3:
-                0,
-
-            P1_RV1:
-                0,
-
-            RV1_H3:
-                0,
-
-            H3_HV3_P1:
-                0,
-
-            HV3_P1_P1:
-                0,
-
-            H6_HV4_IN:
-                0,
-
-            HV4_IN_H4:
-                0,
-
-            P2_RV2:
-                0,
-
-            RV2_H4:
-                0,
-
-            H4_HV4_P2:
-                0,
-
-            HV4_P2_P2:
-                0,
-
-            H1_HV1_DRAIN:
-                0,
-
-            HV1_DRAIN_RES:
-                0,
-
-            H2_HV2_DRAIN:
-                0,
-
-            HV2_DRAIN_RES:
-                0
-        };
-
-    return realRuntime.flows;
-}
-
-// RUNTIME ENVIADO PARA PLANT-VIEW
-
-export function getRealViewRuntime() {
-
+/* Sem vazões por trecho (bancada sem backend de vazões), monta o que os
+   FT permitem; o resto fica desconhecido (null), nunca zero. */
+function deriveSegmentsFromSensors() {
+    const ft = id => byId(realPlant.flowSensors, id)?.flow ?? null;
+    const sum = (a, b) => (a === null || b === null ? null : a + b);
     return {
-
-        mode:
-            'real',
-
-        running:
-            false,
-
-        time:
-            0,
-
-        speed:
-            1,
-
-        connected:
-            realRuntime.connected,
-
-        connecting:
-            realRuntime.connecting,
-
-        connectionLabel:
-            realRuntime.connectionLabel,
-
-        transport:
-            realRuntime.transport,
-
-        port:
-            realRuntime.port,
-
-        lastUpdate:
-            realRuntime.lastUpdate,
-
-        lastError:
-            realRuntime.lastError,
-
-        flows:
-            realRuntime.flows
+        LV101: ft('FT3'),
+        LV102: ft('FT6'),
+        XV102A: ft('FT1'),
+        XV101B: ft('FT2'),
+        LV103: ft('FT4'),
+        LV104: ft('FT5'),
+        B103: sum(ft('FT3'), ft('FT6')),
+        XV101A: null, XV102B: null,
+        HV105: null, HV106: null, HV107: null, HV108: null,
+        B101: null, B102: null, HV101: null, HV102: null
     };
 }
 
-// CONEXÃO WEBSOCKET
+// MENSAGENS
 
-export async function connectRealPlant(
-    url = DEFAULT_WEBSOCKET_URL
-) {
-
-    if (
-        realRuntime.connected ||
-        realRuntime.connecting
-    ) {
-
-        return false;
-    }
-
-    if (
-        realSocket &&
-        (
-            realSocket.readyState ===
-                WebSocket.OPEN ||
-            realSocket.readyState ===
-                WebSocket.CONNECTING
-        )
-    ) {
-
-        return false;
-    }
-
-    intentionalDisconnect =
-        false;
-
-    realRuntime.lastError =
-        null;
-
-    realRuntime.transport =
-        'WebSocket';
-
-    realRuntime.port =
-        '8765';
-
-    setRealConnecting(
-        true
-    );
-
+function handleMessage(raw) {
+    let message;
     try {
-
-        realSocket =
-            new WebSocket(
-                url
-            );
-
-    } catch (error) {
-
-        realSocket =
-            null;
-
-        setRealConnectionError(
-            `Não foi possível criar a conexão WebSocket: ${error.message}`
-        );
-
-        return false;
+        message = JSON.parse(raw);
+    } catch {
+        console.warn('[REAL] Mensagem JSON inválida recebida');
+        return;
     }
+    if (!message || typeof message !== 'object') return;
 
-    realSocket.addEventListener(
-        'open',
-        () => {
-
-            setRealConnectionState(
-                true,
-                {
-                    transport:
-                        'WebSocket',
-
-                    port:
-                        '8765',
-
-                    label:
-                        'Conectado'
-                }
-            );
-
-            realRuntime.lastError =
-                null;
-
-            sendRealCommand(
-                {
-                    type:
-                        'hello',
-
-                    client:
-                        'hmi',
-
-                    application:
-                        'six-tank-supervisor'
-                }
-            );
-
-            console.log(
-                `[REAL] Conectado a ${url}`
-            );
-        }
-    );
-
-    realSocket.addEventListener(
-        'message',
-        event => {
-
-            handleRealWebSocketMessage(
-                event.data
-            );
-        }
-    );
-
-    realSocket.addEventListener(
-        'error',
-        () => {
-
-            if (
-                intentionalDisconnect
-            ) {
-
-                return;
-            }
-
-            realRuntime.lastError =
-                `Não foi possível comunicar com ${url}.`;
-        }
-    );
-
-    realSocket.addEventListener(
-        'close',
-        event => {
-
-            realSocket =
-                null;
-
-            if (
-                intentionalDisconnect
-            ) {
-
-                setRealConnectionState(
-                    false,
-                    {
-                        transport:
-                            'WebSocket',
-
-                        port:
-                            '8765',
-
-                        label:
-                            'Desconectado'
-                    }
-                );
-
-                realRuntime.lastError =
-                    null;
-
-                return;
-            }
-
-            realRuntime.connected =
-                false;
-
-            realRuntime.connecting =
-                false;
-
-            if (
-                event.code === 1000
-            ) {
-
-                realRuntime.connectionLabel =
-                    'Desconectado';
-
-            } else {
-
-                realRuntime.connectionLabel =
-                    'Erro de conexão';
-
-                if (
-                    !realRuntime.lastError
-                ) {
-
-                    realRuntime.lastError =
-                        `Conexão encerrada inesperadamente (código ${event.code}).`;
-                }
-            }
-
-            console.log(
-                '[REAL] WebSocket desconectado.'
-            );
-        }
-    );
-
-    return true;
+    if (message.type === 'state') {
+        const data = message.data && typeof message.data === 'object' ? message.data : message;
+        applyRealData(data);
+        notify();
+        return;
+    }
+    if (message.type === 'hello') {
+        console.log('[REAL] Servidor Python conectado:', message.server ?? message);
+        return;
+    }
+    if (message.type === 'error') {
+        realRuntime.lastError = message.message ?? 'Erro informado pelo servidor Python.';
+        console.warn('[REAL]', realRuntime.lastError);
+        notify();
+        return;
+    }
+    console.warn('[REAL] Tipo de mensagem desconhecido:', message.type);
 }
 
-// DESCONECTAR
+// CONEXÃO
 
-export async function disconnectRealPlant() {
-
-    intentionalDisconnect =
-        true;
-
-    const socketToClose =
-        realSocket;
-
-    realSocket =
-        null;
-
-    if (
-        socketToClose &&
-        (
-            socketToClose.readyState ===
-                WebSocket.OPEN ||
-            socketToClose.readyState ===
-                WebSocket.CONNECTING
-        )
-    ) {
-
-        try {
-
-            socketToClose.close(
-                1000,
-                'Desconexão solicitada pela HMI'
-            );
-
-        } catch (error) {
-
-            console.warn(
-                '[REAL] Erro ao fechar WebSocket:',
-                error
-            );
-        }
+export function setRealConnectionState(connected, options = {}) {
+    realRuntime.connected = Boolean(connected);
+    realRuntime.connecting = false;
+    realRuntime.connectionLabel = options.label ?? (connected ? 'Conectado' : 'Desconectado');
+    if (!connected) {
+        clearMeasurements();
+        realRuntime.backendMode = null;
+        realRuntime.sim = { ...realRuntime.sim, running: false, error: null };
+        realRuntime.loops = {};
+        realRuntime.alarms = [];
+        realRuntime.segments = {};
+        realRuntime.flows = {};
     }
+    notify();
+}
 
-    setRealConnectionState(
-        false,
-        {
-            transport:
-                'WebSocket',
+function scheduleReconnect() {
+    if (!autoReconnect || intentionalClose || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (!realRuntime.connected && !realRuntime.connecting) connectRealPlant(realRuntime.url);
+    }, 2000);
+}
 
-            port:
-                '8765',
+export function setAutoReconnect(enabled) {
+    autoReconnect = Boolean(enabled);
+    if (!autoReconnect && reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+}
 
-            label:
-                'Desconectado'
+export function connectRealPlant(url = realRuntime.url) {
+    return new Promise(resolve => {
+        if (realRuntime.connected || realRuntime.connecting) {
+            resolve(false);
+            return;
         }
-    );
+        realRuntime.url = url;
+        realRuntime.port = String(url.split(':').pop() ?? '');
+        realRuntime.connecting = true;
+        realRuntime.connectionLabel = 'Conectando...';
+        intentionalClose = false;
+        notify();
 
-    realRuntime.lastError =
-        null;
+        let ws;
+        try {
+            ws = new WebSocket(url);
+        } catch (error) {
+            realRuntime.connecting = false;
+            realRuntime.lastError = error.message;
+            realRuntime.connectionLabel = 'Erro de conexão';
+            notify();
+            scheduleReconnect();
+            resolve(false);
+            return;
+        }
+        socket = ws;
 
-    return true;
+        ws.addEventListener('open', () => {
+            // Sem "hello": no modo HARDWARE o servidor responde erro a qualquer mensagem.
+            setRealConnectionState(true, { label: 'Conectado' });
+            resolve(true);
+        });
+
+        ws.addEventListener('message', event => handleMessage(event.data));
+
+        ws.addEventListener('error', () => {
+            realRuntime.lastError = 'Falha na conexão WebSocket.';
+        });
+
+        ws.addEventListener('close', event => {
+            if (socket === ws) socket = null;
+            const wasConnecting = realRuntime.connecting;
+            if (intentionalClose) {
+                setRealConnectionState(false, { label: 'Desconectado' });
+            } else if (event.code === 1000) {
+                setRealConnectionState(false, { label: 'Desconectado' });
+            } else {
+                realRuntime.lastError = realRuntime.lastError ?? `Conexão encerrada (código ${event.code})`;
+                setRealConnectionState(false, { label: 'Sem conexão com o backend' });
+            }
+            if (wasConnecting) resolve(false);
+            scheduleReconnect();
+        });
+    });
+}
+
+export function disconnectRealPlant() {
+    intentionalClose = true;
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    if (socket) {
+        try {
+            socket.close(1000, 'Desconexão solicitada pela HMI');
+        } catch { /* já fechado */ }
+        socket = null;
+    }
+    setRealConnectionState(false, { label: 'Desconectado' });
+    return Promise.resolve(true);
+}
+
+// COMANDOS
+/* Somente leitura no modo HARDWARE: nada é enviado, por construção. */
+
+export function sendCommand(message) {
+    if (!isWritable()) return false;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    try {
+        socket.send(JSON.stringify(message));
+        return true;
+    } catch (error) {
+        realRuntime.lastError = error.message;
+        return false;
+    }
+}
+
+export function setPumpPower(id, power) {
+    return sendCommand({ type: 'pump', id, power: Boolean(power) });
+}
+
+export function setPumpCommand(id, command) {
+    return sendCommand({ type: 'pump', id, command: clamp01(Number(command)) });
+}
+
+export function setPump(id, power, command) {
+    return sendCommand({ type: 'pump', id, power: Boolean(power), command: clamp01(Number(command)) });
+}
+
+export function setValveOpening(id, opening) {
+    // MV (HV-109) e V1..V4 (LV-101..104)
+    return sendCommand({ type: 'valve', id, opening: clamp01(Number(opening)) });
+}
+
+export function setManualValveOpening(id, opening) {
+    // RV1/RV2 e HV*
+    return sendCommand({ type: 'manual_valve', id, opening: clamp01(Number(opening)) });
+}
+
+export function setRelayState(id, state) {
+    return sendCommand({ type: 'relay', id, state: Boolean(state) });
+}
+
+export function setLoop(tag, changes = {}) {
+    const message = { type: 'loop', id: tag };
+    if (changes.sp !== undefined) message.sp = Number(changes.sp);
+    if (changes.mode !== undefined) message.mode = changes.mode;
+    if (changes.mv !== undefined) message.mv = clamp01(Number(changes.mv));
+    if (changes.tuning && typeof changes.tuning === 'object') message.tuning = changes.tuning;
+    return sendCommand(message);
+}
+
+export function setScenario(id) {
+    return sendCommand({ type: 'scenario', id });
+}
+
+export function setThreeWayTiming(id, tA, tB) {
+    return sendCommand({ type: 'xv', id, tA: Math.max(0, Number(tA)), tB: Math.max(0, Number(tB)) });
+}
+
+export function setSim(changes = {}) {
+    const message = { type: 'sim' };
+    if (changes.running !== undefined) message.running = Boolean(changes.running);
+    if (changes.speed !== undefined) message.speed = Number(changes.speed);
+    if (changes.reset) message.reset = true;
+    if (changes.levels && typeof changes.levels === 'object') message.levels = changes.levels;
+    return sendCommand(message);
+}
+
+// RUNTIME PARA A VIEW E O PAINEL DE ENSAIOS
+
+export function getRealViewRuntime() {
+    const sim = realRuntime.sim;
+    return {
+        mode: realRuntime.backendMode === 'HARDWARE' ? 'real' : 'simulation',
+        backendMode: realRuntime.backendMode,
+        running: realRuntime.connected && (realRuntime.backendMode === 'HARDWARE' ? true : sim.running),
+        time: sim.t,
+        speed: sim.speed,
+        connected: realRuntime.connected,
+        connecting: realRuntime.connecting,
+        connectionLabel: realRuntime.connectionLabel,
+        transport: realRuntime.transport,
+        port: realRuntime.port,
+        lastUpdate: realRuntime.lastUpdate,
+        lastError: realRuntime.lastError,
+        writable: isWritable(),
+        sim,
+        scenario: realRuntime.scenario,
+        scenarios: realRuntime.scenarios,
+        loops: realRuntime.loops,
+        xv: realRuntime.xv,
+        alarms: realRuntime.alarms,
+        segments: realRuntime.segments,
+        flows: realRuntime.flows
+    };
 }

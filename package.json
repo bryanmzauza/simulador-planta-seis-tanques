@@ -1,15 +1,12 @@
 {
   "name": "simulador-seis-tanques",
-  "version": "1.0.0",
-  "description": "Simulador e supervisório da Planta Multivariável de Seis Tanques — UFRGS.",
+  "version": "2.0.0",
+  "description": "Supervisório da Planta Multivariável de Seis Tanques — UFRGS (simulação Modelica e planta real).",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build"
   },
   "type": "commonjs",
-  "dependencies": {
-    "@joint/core": "^4.3.1"
-  },
   "devDependencies": {
     "vite": "^8.2.1"
   },
